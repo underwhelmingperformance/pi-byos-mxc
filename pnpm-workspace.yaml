@@ -1,0 +1,8 @@
+---
+engineStrict: true
+
+allowBuilds:
+  '@google/genai': false
+  koffi: false
+  node-pty: false
+  protobufjs: false

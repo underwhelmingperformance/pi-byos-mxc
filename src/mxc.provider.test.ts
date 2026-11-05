@@ -1,0 +1,181 @@
+import { execFile } from 'node:child_process';
+import { access, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+
+import type { SandboxProvider } from 'pi-bring-your-own-sandbox/api';
+import { defineSandboxProviderTests } from 'pi-bring-your-own-sandbox/testing';
+import { expect } from 'vitest';
+
+import { MxcBackend } from './backend.js';
+import type { MxcConfig } from './config.js';
+import { EFFECTIVE_POLICY } from './policy.js';
+import { provider } from './provider.js';
+import { prepareRuntime } from './runtime.js';
+import type { JobAllocation } from './supervisor/client.js';
+import { SupervisorJob } from './supervisor/client.js';
+
+const allocations = new Map<string, Set<string>>();
+const jobs = new Map<string, Map<string, JobAllocation>>();
+const execute = promisify(execFile);
+const testedProvider: SandboxProvider<MxcConfig> = {
+	...provider,
+	open(request, context) {
+		return MxcBackend.open(
+			request,
+			{
+				...context,
+				reportRecovery(recovery) {
+					context.reportRecovery(recovery);
+
+					if (recovery.kind === 'allocation') {
+						allocations
+							.get(request.hostWorkspace)
+							?.add(path.join(tmpdir(), `pi-byos-mxc-${recovery.id}`));
+					}
+				}
+			},
+			{
+				prepareRuntime,
+				createJob(options) {
+					return new SupervisorJob({
+						...options,
+						record(allocation) {
+							jobs.get(request.hostWorkspace)?.set(allocation.id, allocation);
+
+							return options.record(allocation);
+						}
+					});
+				}
+			}
+		);
+	}
+};
+
+async function verifyOwnedProcesses(workspace: string): Promise<void> {
+	const seen = jobs.get(workspace);
+
+	if (seen === undefined || seen.size === 0) {
+		throw new Error('The fixture did not record native job identities.');
+	}
+
+	const supervisors = new Set(seen.values().map((job) => job.supervisorPid));
+	const groups = new Set(
+		seen
+			.values()
+			.map((job) => job.targetPid)
+			.filter((id) => id !== undefined)
+	);
+	const snapshot = await execute('/bin/ps', ['-axo', 'pid=,pgid=,stat='], {
+		timeout: 1000,
+		maxBuffer: 2_097_152
+	});
+	const alive = snapshot.stdout
+		.trim()
+		.split('\n')
+		.map((line) => line.trim().split(/\s+/u))
+		.filter(
+			([pid, group, status]) =>
+				supervisors.has(Number(pid)) ||
+				(groups.has(Number(group)) && !status?.startsWith('Z'))
+		);
+
+	expect(alive).toStrictEqual([]);
+}
+
+async function verifyStopped(workspace: string): Promise<void> {
+	await verifyOwnedProcesses(workspace);
+
+	const saved = await readFile(path.join(workspace, 'descendant.pid'), 'utf8');
+	const id = saved.trim();
+
+	try {
+		const result = await execute('/bin/ps', ['-p', id, '-o', 'stat='], {
+			timeout: 1000
+		});
+
+		expect(result.stdout.trimStart().startsWith('Z')).toBe(true);
+	} catch (error) {
+		if (!(error instanceof Error && 'code' in error && error.code === 1)) {
+			throw error;
+		}
+	}
+}
+
+defineSandboxProviderTests({
+	label: `MXC ${process.platform}/${process.arch} shared workspace`,
+	provider: testedProvider,
+	timeoutMs: 20_000,
+	cleanup: { cancellationGraceMs: 10_000, disposalTimeoutMs: 15_000 },
+	async createFixture() {
+		const temporary = await mkdtemp(
+			path.join(tmpdir(), 'pi-byos-mxc-contract-')
+		);
+		const workspace = await realpath(temporary);
+		const resources = new Set<string>();
+		const probe = {
+			exit: { kind: 'code', code: 7 },
+			stdout: new Uint8Array([0, 255, 10]),
+			stderr: new TextEncoder().encode('error')
+		} as const;
+		const command = "printf '\\000\\377\\012'; printf error >&2; exit 7";
+
+		allocations.set(workspace, resources);
+		jobs.set(workspace, new Map());
+
+		return {
+			configuration: {},
+			hostWorkspace: workspace,
+			policy: EFFECTIVE_POLICY,
+			shells: {
+				sh: { ...probe, request: { kind: 'shell', dialect: 'sh', command } },
+				bash: { ...probe, request: { kind: 'shell', dialect: 'bash', command } }
+			},
+			cancellation: {
+				request: {
+					kind: 'shell',
+					dialect: 'sh',
+					command:
+						'sleep 5 & child=$!; printf "%s" "$child" > descendant.pid; printf ready; wait "$child"'
+				},
+				ready: new TextEncoder().encode('ready'),
+				verifyStopped: () => verifyStopped(workspace)
+			},
+			async verifyDisposed() {
+				await verifyOwnedProcesses(workspace);
+
+				for (const resource of resources) {
+					await expect(access(resource)).rejects.toMatchObject({
+						code: 'ENOENT'
+					});
+				}
+			},
+			async cleanup() {
+				for (const resource of resources) {
+					try {
+						await access(resource);
+					} catch (error) {
+						if (
+							error instanceof Error &&
+							'code' in error &&
+							error.code === 'ENOENT'
+						) {
+							continue;
+						}
+
+						throw error;
+					}
+
+					throw new Error(
+						`Native cleanup was not confirmed. Inspect ${resource} before removing fixture resources.`
+					);
+				}
+
+				allocations.delete(workspace);
+				jobs.delete(workspace);
+				await rm(workspace, { recursive: true, force: true });
+			}
+		};
+	}
+});
