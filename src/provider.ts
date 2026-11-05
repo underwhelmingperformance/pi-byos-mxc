@@ -10,15 +10,15 @@ export const provider: SandboxProvider<MxcConfig> = {
 	label: 'Microsoft MXC (experimental)',
 	protocolVersion: 1,
 	capabilities: {
-		operations: ['exec'],
+		operations: ['exec', 'workspace.protection'],
 		processKinds: ['shell'],
 		shells: ['sh', 'bash'],
 		exitStatus: 'optional',
 		terminationScope: 'process-group'
 	},
 	policies: {
-		workspaceAccess: ['read-write'],
-		filesystemScope: ['provider-default'],
+		workspaceAccess: ['read-write', 'read-only'],
+		filesystemScope: ['provider-default', 'system-read-only'],
 		networkAccess: ['provider-default']
 	},
 	defaultPolicy: EFFECTIVE_POLICY,

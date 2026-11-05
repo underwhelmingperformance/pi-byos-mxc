@@ -1,6 +1,7 @@
-import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import type { SpawnOptions } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import type { Writable } from 'node:stream';
 import { Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 
@@ -10,19 +11,50 @@ import type {
 } from 'pi-bring-your-own-sandbox/api';
 import {
 	InvalidSandboxRequestError,
-	SandboxTimeoutError,
+	SandboxOperationError,
 	SandboxTransportError
 } from 'pi-bring-your-own-sandbox/api';
 
-import { ProcessGroups } from '../platform/process-groups.js';
+import type { Clock } from '../clock.js';
+import { systemClock } from '../clock.js';
+import { ProcessGroups, PS_LOCATIONS } from '../platform/process-groups.js';
+import { SYSTEM_PATH } from '../shell.js';
 
 import type { ChildMessage, ParentMessage, StartMessage } from './protocol.js';
-import { childMessage } from './protocol.js';
+import { childMessage, MAX_START_BYTES } from './protocol.js';
+
+// BYOS publishes a cleanup allowance before it aborts an operation. When the job
+// stops after its own failure, such as a transport failure, BYOS has not
+// published an allowance, so the job uses this one. It matches BYOS's default
+// cancellation grace.
+const FAILURE_CLEANUP_MS = 5000;
+
+function listLocations(locations: readonly string[]): string {
+	return `${locations.slice(0, -1).join(', ')} or ${locations.at(-1) ?? ''}`;
+}
 
 export interface JobAllocation {
 	readonly id: string;
 	readonly supervisorPid: number;
 	readonly targetPid?: number;
+}
+
+/**
+The parts of a child process that the job uses. Node's `ChildProcess`
+satisfies it.
+*/
+export interface SupervisorProcess {
+	readonly pid?: number | undefined;
+	readonly connected: boolean;
+	readonly stdio: readonly (Readable | Writable | null | undefined)[];
+	send(
+		message: ParentMessage,
+		callback: (error?: Error | null) => void
+	): boolean;
+	kill(signal: NodeJS.Signals): boolean;
+	on(event: 'error', listener: (error: Error) => void): this;
+	on(event: 'close', listener: (code?: number | null) => void): this;
+	on(event: 'message', listener: (message: unknown) => void): this;
 }
 
 export interface JobOptions {
@@ -31,25 +63,32 @@ export interface JobOptions {
 	readonly context: BackendProcessContext;
 	readonly record: (allocation: JobAllocation) => Promise<void>;
 	readonly groups?: Pick<ProcessGroups, 'isLeader' | 'isEmpty'>;
+	readonly clock?: Clock;
 	readonly spawn?: (
 		command: string,
 		childArguments: readonly string[],
 		options: SpawnOptions
-	) => ChildProcess;
+	) => SupervisorProcess;
 }
 
+/**
+Runs one command through a supervisor process. BYOS aborts the context signal
+at the operation deadline. The job then has the published cleanup allowance to
+confirm that the target stopped.
+*/
 export class SupervisorJob {
 	readonly #options: JobOptions;
 	readonly #groups: Pick<ProcessGroups, 'isLeader' | 'isEmpty'>;
+	readonly #clock: Clock;
 	readonly #result = Promise.withResolvers<BackendProcessOutcome>();
 	readonly #closed = Promise.withResolvers<boolean>();
-	#child: ChildProcess | undefined;
+	#child: SupervisorProcess | undefined;
 	#output: Promise<unknown> = Promise.resolve();
-	#timer: ReturnType<typeof setTimeout> | undefined;
-	#expiresAt = 0;
+	#cancelTimer: (() => void) | undefined;
 	#cleanupExpiresAt: number | undefined;
 	#targetPid: number | undefined;
 	#hasSentStart = false;
+	#hasSentCancel = false;
 	#hasCompletion = false;
 	#isReleased = false;
 	#isFinished = false;
@@ -62,32 +101,40 @@ export class SupervisorJob {
 			return;
 		}
 
-		const context = this.#options.context;
-		const deadline = context.cleanup.deadline ?? context.deadline;
+		this.#arm(this.#cleanupExpiry());
+		this.#stop();
+	};
 
-		this.#arm(deadline, 'cleanup');
+	constructor(options: JobOptions) {
+		this.#options = options;
+		this.#groups = options.groups ?? new ProcessGroups();
+		this.#clock = options.clock ?? systemClock;
+	}
 
+	#failure(): SandboxTransportError | SandboxOperationError {
+		if (this.#hasSentStart) {
+			return new SandboxTransportError({
+				operation: 'exec',
+				providerId: 'mxc'
+			});
+		}
+
+		return new SandboxOperationError({ operation: 'exec', providerId: 'mxc' });
+	}
+
+	#stop(): void {
 		if (!this.#hasSentStart) {
 			this.#child?.kill('SIGKILL');
 
 			return;
 		}
 
-		this.#send({
-			version: 1,
-			kind: 'cancel',
-			id: this.#options.request.id,
-			deadline
-		});
-	};
+		if (this.#hasSentCancel) {
+			return;
+		}
 
-	constructor(options: JobOptions) {
-		this.#options = options;
-		this.#groups = options.groups ?? new ProcessGroups();
-	}
-
-	#transportError(): SandboxTransportError {
-		return new SandboxTransportError({ operation: 'exec', providerId: 'mxc' });
+		this.#hasSentCancel = true;
+		this.#send({ version: 1, kind: 'cancel', id: this.#options.request.id });
 	}
 
 	#send(message: ParentMessage): void {
@@ -108,7 +155,7 @@ export class SupervisorJob {
 
 	#clear(): void {
 		this.#isFinished = true;
-		clearTimeout(this.#timer);
+		this.#cancelTimer?.();
 		this.#options.context.signal.removeEventListener('abort', this.#cancel);
 	}
 
@@ -119,38 +166,40 @@ export class SupervisorJob {
 
 		this.#clear();
 		this.#child?.kill('SIGKILL');
-		this.#result.reject(this.#transportError());
+		this.#result.reject(this.#failure());
 	}
 
-	#schedule(): void {
-		clearTimeout(this.#timer);
+	#cleanupExpiry(): number {
+		return (
+			this.#clock.monotonicTime() +
+			(this.#options.context.cleanup.remainingMs() ?? FAILURE_CLEANUP_MS)
+		);
+	}
 
-		const remaining = this.#expiresAt - performance.now();
-
-		if (remaining <= 0) {
-			this.#reject();
+	#expire(): void {
+		if (
+			this.#cleanupExpiresAt !== undefined &&
+			this.#clock.monotonicTime() < this.#cleanupExpiresAt
+		) {
+			this.#arm(this.#cleanupExpiresAt);
 
 			return;
 		}
 
-		this.#timer = setTimeout(
-			() => {
-				this.#schedule();
-			},
-			Math.min(remaining, 2_147_483_647)
-		);
+		this.#reject();
 	}
 
-	#arm(deadline: number, phase: 'execution' | 'cleanup' = 'execution'): void {
-		let expiresAt = performance.now() + Math.max(0, deadline - Date.now());
+	#arm(expiresAt: number): void {
+		const cleanupExpiresAt = Math.min(
+			this.#cleanupExpiresAt ?? expiresAt,
+			expiresAt
+		);
 
-		if (phase === 'cleanup') {
-			expiresAt = Math.min(this.#cleanupExpiresAt ?? expiresAt, expiresAt);
-			this.#cleanupExpiresAt = expiresAt;
-		}
-
-		this.#expiresAt = expiresAt;
-		this.#schedule();
+		this.#cleanupExpiresAt = cleanupExpiresAt;
+		this.#cancelTimer?.();
+		this.#cancelTimer = this.#clock.schedule(() => {
+			this.#expire();
+		}, cleanupExpiresAt - this.#clock.monotonicTime());
 	}
 
 	#fail(): void {
@@ -159,20 +208,10 @@ export class SupervisorJob {
 		}
 
 		this.#hasFailure = true;
-
-		const deadline =
-			this.#options.context.cleanup.deadline ??
-			Math.min(this.#options.context.deadline, Date.now() + 5000);
-
-		this.#arm(deadline, 'cleanup');
+		this.#arm(this.#cleanupExpiry());
 
 		if (this.#hasSentStart) {
-			this.#send({
-				version: 1,
-				kind: 'cancel',
-				id: this.#options.request.id,
-				deadline
-			});
+			this.#stop();
 
 			return;
 		}
@@ -202,13 +241,18 @@ export class SupervisorJob {
 		this.#send(this.#options.request);
 	}
 
+	#reportUnreadableProcesses(): void {
+		this.#options.context.reportDiagnostic({
+			level: 'warning',
+			message: `MXC could not read the host process table, so it cannot confirm the state of the command's process group. Check that ps is available at ${listLocations(PS_LOCATIONS)}.`
+		});
+	}
+
 	#canRelease(): boolean {
 		return (
 			!this.#isFinished &&
 			!this.#options.context.signal.aborted &&
-			!this.#hasFailure &&
-			performance.now() < this.#expiresAt &&
-			Date.now() < this.#options.context.deadline
+			!this.#hasFailure
 		);
 	}
 
@@ -232,7 +276,13 @@ export class SupervisorJob {
 			return;
 		}
 
-		if (!(await this.#groups.isLeader(pid, this.#options.context.deadline))) {
+		const isLeader = await this.#groups.isLeader(pid);
+
+		if (isLeader === undefined) {
+			this.#reportUnreadableProcesses();
+		}
+
+		if (isLeader !== true) {
 			this.#fail();
 
 			return;
@@ -260,21 +310,18 @@ export class SupervisorJob {
 		await this.#output;
 
 		const context = this.#options.context;
-		const deadline = context.cleanup.deadline ?? context.deadline;
 		const hasStopped =
-			!this.#isReleased ||
-			(await this.#groups.isEmpty(this.#targetPid, deadline));
+			!this.#isReleased || (await this.#groups.isEmpty(this.#targetPid));
 
 		if (this.#isFinished) {
 			return;
 		}
 
-		if (
-			!wasClosedNormally ||
-			!hasStopped ||
-			this.#hasFailure ||
-			performance.now() >= this.#expiresAt
-		) {
+		if (hasStopped === undefined) {
+			this.#reportUnreadableProcesses();
+		}
+
+		if (!wasClosedNormally || !hasStopped || this.#hasFailure) {
 			this.#reject();
 
 			return;
@@ -291,14 +338,6 @@ export class SupervisorJob {
 
 		if (context.signal.aborted) {
 			this.#result.resolve({ kind: 'cancelled', termination: 'confirmed' });
-
-			return;
-		}
-
-		if (message.timedOut) {
-			this.#result.reject(
-				new SandboxTimeoutError({ operation: 'exec', completion: 'confirmed' })
-			);
 
 			return;
 		}
@@ -368,12 +407,12 @@ export class SupervisorJob {
 		}
 	}
 
-	limitCleanup(deadline: number): void {
+	limitCleanup(remainingMs: number): void {
 		if (this.#isFinished || this.#cleanupExpiresAt === undefined) {
 			return;
 		}
 
-		this.#arm(deadline, 'cleanup');
+		this.#arm(this.#clock.monotonicTime() + remainingMs);
 	}
 
 	run(): Promise<BackendProcessOutcome> {
@@ -381,7 +420,9 @@ export class SupervisorJob {
 			return this.#result.promise;
 		}
 
-		if (Buffer.byteLength(JSON.stringify(this.#options.request)) > 1_048_576) {
+		if (
+			Buffer.byteLength(JSON.stringify(this.#options.request)) > MAX_START_BYTES
+		) {
 			return Promise.reject(
 				new InvalidSandboxRequestError({ operation: 'exec', providerId: 'mxc' })
 			);
@@ -393,15 +434,6 @@ export class SupervisorJob {
 			return Promise.resolve({ kind: 'cancelled', termination: 'confirmed' });
 		}
 
-		if (context.deadline <= Date.now()) {
-			return Promise.reject(
-				new SandboxTimeoutError({
-					operation: 'exec',
-					completion: 'not-started'
-				})
-			);
-		}
-
 		const launch = this.#options.spawn ?? spawn;
 		const child = launch(
 			process.execPath,
@@ -409,7 +441,7 @@ export class SupervisorJob {
 			{
 				cwd: path.dirname(this.#options.entry),
 				stdio: ['ignore', 'ignore', 'ignore', 'ipc', 'pipe', 'pipe'],
-				env: { PATH: '/bin:/usr/bin:/usr/sbin:/sbin' }
+				env: { PATH: SYSTEM_PATH }
 			}
 		);
 
@@ -486,7 +518,6 @@ export class SupervisorJob {
 			void this.#enqueue(input);
 		});
 		context.signal.addEventListener('abort', this.#cancel, { once: true });
-		this.#arm(context.cleanup.deadline ?? context.deadline);
 
 		return this.#result.promise;
 	}

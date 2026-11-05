@@ -17,15 +17,19 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
 import type { SandboxOpenContext } from 'pi-bring-your-own-sandbox/api';
-import { expect, it } from 'vitest';
+import { assert, expect, it } from 'vitest';
 
 import { MxcBackend } from './backend.js';
 import { validateConfig } from './config.js';
+import { cleanupControl } from './fixtures/cleanup.js';
 import { nodeCommand } from './fixtures/native-sandbox.js';
+import { nodeReadonlyPaths } from './fixtures/node-runtime.js';
 import { EFFECTIVE_POLICY } from './policy.js';
 import { prepareRuntime } from './runtime.js';
 import type { JobAllocation } from './supervisor/client.js';
 import { SupervisorJob } from './supervisor/client.js';
+
+const nodePaths = await nodeReadonlyPaths();
 
 const execute = promisify(execFile);
 
@@ -68,7 +72,7 @@ async function waitForGroups(
 		await delay(50);
 	}
 
-	throw new Error('The finite crash fixture left a supervised group alive.');
+	expect(await groupMembers(jobs)).toStrictEqual([]);
 }
 
 it('retains recovery after hard supervisor death even when the platform stops the group', async () => {
@@ -90,8 +94,9 @@ it('retains recovery after hard supervisor death even when the platform stops th
 	const context: SandboxOpenContext = {
 		operationId: randomUUID(),
 		deadline: Date.now() + 15_000,
+		remainingMs: () => 15_000,
 		signal: new AbortController().signal,
-		cleanup: { deadline: undefined },
+		cleanup: cleanupControl().cleanup,
 		reportRecovery(recovery) {
 			if (recovery.kind === 'allocation') {
 				allocations.add(path.join(tmpdir(), `pi-byos-mxc-${recovery.id}`));
@@ -113,7 +118,7 @@ it('retains recovery after hard supervisor death even when the platform stops th
 				hostWorkspace: workspace,
 				policy: EFFECTIVE_POLICY,
 				configuration: validateConfig({
-					readonlyPaths: [path.dirname(process.execPath)]
+					readonlyPaths: [...nodePaths]
 				})
 			},
 			context,
@@ -158,12 +163,7 @@ it('retains recovery after hard supervisor death even when the platform stops th
 									return;
 								}
 
-								if (helper === undefined) {
-									throw new Error(
-										'The fixture did not capture its supervisor handle.'
-									);
-								}
-
+								assert.isDefined(helper);
 								finiteDeadline = performance.now() + workloadLifetimeMs + 500;
 								didKill = helper.kill('SIGKILL');
 							}
@@ -188,12 +188,9 @@ it('retains recovery after hard supervisor death even when the platform stops th
 			completion: 'unknown'
 		});
 
-		if (
-			crashed?.targetPid === undefined ||
-			backend.workspace.home === undefined
-		) {
-			throw new Error('The crash fixture did not record its target identity.');
-		}
+		assert.isDefined(crashed?.targetPid);
+		assert.isDefined(crashed);
+		assert.isDefined(backend.workspace.home);
 
 		const root = path.dirname(backend.workspace.home);
 		const saved: unknown = JSON.parse(
@@ -208,7 +205,8 @@ it('retains recovery after hard supervisor death even when the platform stops th
 			backend.dispose({
 				...context,
 				deadline: Date.now() + 5000,
-				cleanup: { deadline: Date.now() + 5000 }
+				remainingMs: () => 5000,
+				cleanup: { remainingMs: () => 5000, deadline: Date.now() + 5000 }
 			})
 		).rejects.toMatchObject({ name: 'SandboxCleanupError' });
 		await expect(access(root)).resolves.toBeUndefined();
@@ -257,11 +255,13 @@ it('retains recovery after hard supervisor death even when the platform stops th
 		await delay(Math.max(0, finiteDeadline - performance.now()));
 		await waitForGroups(jobs);
 
-		if (jobs.values().some((job) => job.targetPid === undefined)) {
-			throw new Error(
-				'Recovery identities are incomplete; inspect the crash fixture before removing its records.'
-			);
-		}
+		// Leave the records for inspection when an identity is missing.
+		expect(
+			jobs
+				.values()
+				.filter((job) => job.targetPid === undefined)
+				.toArray()
+		).toStrictEqual([]);
 
 		for (const allocation of allocations) {
 			await rm(allocation, { recursive: true, force: true });

@@ -1,7 +1,4 @@
 import { constants } from 'node:fs';
-import { access, realpath, stat } from 'node:fs/promises';
-import { createRequire } from 'node:module';
-import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type {
@@ -10,8 +7,15 @@ import type {
 } from 'pi-bring-your-own-sandbox/api';
 
 import type { MxcConfig } from './config.js';
-import { MxcConfigError } from './config.js';
+import {
+	ShellNotFileError,
+	UnsupportedRuntimeError,
+	WorkspaceNotDirectoryError
+} from './errors.js';
+import type { Host, HostFileSystem } from './host.js';
+import { systemHost } from './host.js';
 import { assertDisjointPaths } from './paths.js';
+import { packageRoot, trustedPackages } from './platform/packages.js';
 import { systemReadonlyPaths } from './platform/system-paths.js';
 import { resolveBackend } from './policy.js';
 
@@ -19,66 +23,38 @@ export interface MxcRuntime {
 	readonly entry: string;
 	readonly workspace: string;
 	readonly readonlyPaths: readonly string[];
+	/**
+	Canonical grants and shells from the MXC settings.
+	*/
+	readonly configuredPaths: readonly string[];
 	readonly shells: ReadonlyMap<ShellDialect, string>;
 	readonly backend: 'seatbelt' | 'bubblewrap';
 }
 
-async function packageRoot(entry: string): Promise<string> {
-	let directory = path.dirname(await realpath(entry));
-
-	for (;;) {
-		try {
-			await access(path.join(directory, 'package.json'));
-
-			return directory;
-		} catch (error) {
-			if (!(
-				error instanceof Error &&
-				'code' in error &&
-				error.code === 'ENOENT'
-			)) {
-				throw error;
-			}
-		}
-
-		const parent = path.dirname(directory);
-
-		if (parent === directory) {
-			throw new MxcConfigError(
-				'Cannot resolve a trusted runtime package root.'
-			);
-		}
-
-		directory = parent;
-	}
+export interface RuntimeOptions {
+	readonly host: Host;
+	readonly supervisor: string;
 }
 
-async function trustedPaths(entry: string): Promise<string[]> {
-	const sdk = fileURLToPath(import.meta.resolve('@microsoft/mxc-sdk/v1'));
-	const requireSdk = createRequire(sdk);
-	const modules = [
-		entry,
-		sdk,
-		requireSdk.resolve('koffi'),
-		requireSdk.resolve('semver'),
-		requireSdk.resolve('node-pty'),
-		fileURLToPath(import.meta.resolve('typebox')),
-		fileURLToPath(import.meta.resolve('pi-bring-your-own-sandbox/api'))
-	];
-	const roots = await Promise.all(modules.map((module) => packageRoot(module)));
+const DEFAULT_OPTIONS: RuntimeOptions = Object.freeze({
+	host: systemHost,
+	supervisor: fileURLToPath(
+		new URL('../dist/supervisor/entry.js', import.meta.url)
+	)
+});
 
-	return [...roots, await realpath(process.execPath)];
-}
-
-async function executable(filename: string): Promise<string> {
-	const canonical = await realpath(filename);
-	const metadata = await stat(canonical);
+async function executable(
+	fs: HostFileSystem,
+	filename: string
+): Promise<string> {
+	const canonical = await fs.realpath(filename);
+	const metadata = await fs.stat(canonical);
 
 	if (!metadata.isFile()) {
-		throw new MxcConfigError('MXC shell paths must refer to executable files.');
+		throw new ShellNotFileError(canonical);
 	}
 
-	await access(canonical, constants.X_OK);
+	await fs.access(canonical, constants.X_OK);
 
 	return canonical;
 }
@@ -86,50 +62,52 @@ async function executable(filename: string): Promise<string> {
 export async function prepareRuntime(
 	workspace: string,
 	config: MxcConfig,
-	context: SandboxOpenContext
+	context: SandboxOpenContext,
+	options: RuntimeOptions = DEFAULT_OPTIONS
 ): Promise<MxcRuntime> {
-	const backend = resolveBackend(process.platform, config.backend);
+	const { fs, environment } = options.host;
+	const backend = resolveBackend(environment.platform, config.backend);
 
 	if (
-		Number(process.versions.node.split('.', 1)[0]) < 24 ||
-		(process.platform === 'darwin' && process.arch !== 'arm64')
+		Number(environment.nodeVersion.split('.', 1)[0]) < 24 ||
+		(environment.platform === 'darwin' && environment.arch !== 'arm64')
 	) {
-		throw new MxcConfigError(
-			'The pinned MXC package requires Node 24+ and has macOS native assets for ARM64 only.'
+		throw new UnsupportedRuntimeError(
+			environment.nodeVersion,
+			environment.platform,
+			environment.arch
 		);
 	}
 
-	const canonicalWorkspace = await realpath(workspace);
-	const metadata = await stat(canonicalWorkspace);
+	const canonicalWorkspace = await fs.realpath(workspace);
+	const metadata = await fs.stat(canonicalWorkspace);
 
 	if (!metadata.isDirectory()) {
-		throw new MxcConfigError('The MXC workspace must be a directory.');
+		throw new WorkspaceNotDirectoryError(canonicalWorkspace);
 	}
 
-	const entry = await realpath(
-		fileURLToPath(new URL('../dist/supervisor/entry.js', import.meta.url))
-	);
+	const entry = await fs.realpath(options.supervisor);
 	const configuredPaths = await Promise.all(
-		config.readonlyPaths.map((filename) => realpath(filename))
+		config.readonlyPaths.map((filename) => fs.realpath(filename))
 	);
 	const readonlyPaths = [
-		...(await systemReadonlyPaths(process.platform)),
+		...(await systemReadonlyPaths(environment.platform, fs)),
 		...configuredPaths
 	];
-	const protectedPaths = await trustedPaths(entry);
-
-	assertDisjointPaths(canonicalWorkspace, [
-		...protectedPaths,
-		...readonlyPaths
-	]);
-
+	const protectedPaths = [
+		...(await trustedPackages(
+			options.host,
+			await packageRoot(options.host, entry)
+		)),
+		await fs.realpath(environment.execPath)
+	];
 	const shells = new Map<ShellDialect, string>([
-		['sh', await executable(config.shells.sh)]
+		['sh', await executable(fs, config.shells.sh)]
 	]);
 
 	if (config.shells.bash !== undefined) {
 		try {
-			shells.set('bash', await executable(config.shells.bash));
+			shells.set('bash', await executable(fs, config.shells.bash));
 		} catch {
 			context.reportDiagnostic({
 				level: 'warning',
@@ -139,10 +117,17 @@ export async function prepareRuntime(
 		}
 	}
 
+	assertDisjointPaths(canonicalWorkspace, [
+		...protectedPaths,
+		...readonlyPaths,
+		...shells.values()
+	]);
+
 	return {
 		entry,
 		workspace: canonicalWorkspace,
 		readonlyPaths: [...readonlyPaths, ...shells.values()],
+		configuredPaths: [...configuredPaths, ...shells.values()],
 		shells,
 		backend
 	};

@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 
 import type { SandboxProvider } from 'pi-bring-your-own-sandbox/api';
 import { defineSandboxProviderTests } from 'pi-bring-your-own-sandbox/testing';
-import { expect } from 'vitest';
+import { assert, expect } from 'vitest';
 
 import { MxcBackend } from './backend.js';
 import type { MxcConfig } from './config.js';
@@ -56,9 +56,8 @@ const testedProvider: SandboxProvider<MxcConfig> = {
 async function verifyOwnedProcesses(workspace: string): Promise<void> {
 	const seen = jobs.get(workspace);
 
-	if (seen === undefined || seen.size === 0) {
-		throw new Error('The fixture did not record native job identities.');
-	}
+	assert.isDefined(seen);
+	expect(seen.size).not.toBe(0);
 
 	const supervisors = new Set(seen.values().map((job) => job.supervisorPid));
 	const groups = new Set(
@@ -152,26 +151,25 @@ defineSandboxProviderTests({
 				}
 			},
 			async cleanup() {
+				const remaining: string[] = [];
+
 				for (const resource of resources) {
 					try {
 						await access(resource);
+						remaining.push(resource);
 					} catch (error) {
-						if (
+						if (!(
 							error instanceof Error &&
 							'code' in error &&
 							error.code === 'ENOENT'
-						) {
-							continue;
+						)) {
+							throw error;
 						}
-
-						throw error;
 					}
-
-					throw new Error(
-						`Native cleanup was not confirmed. Inspect ${resource} before removing fixture resources.`
-					);
 				}
 
+				// Leave unconfirmed native resources in place for inspection.
+				expect(remaining).toStrictEqual([]);
 				allocations.delete(workspace);
 				jobs.delete(workspace);
 				await rm(workspace, { recursive: true, force: true });

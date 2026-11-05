@@ -1,5 +1,7 @@
 import { expect, it } from 'vitest';
 
+import { OverlappingPathsError } from './errors.js';
+import { thrown } from './fixtures/thrown.js';
 import { assertDisjointPaths, isPathWithin } from './paths.js';
 
 it.each([
@@ -20,9 +22,11 @@ it.each([
 ])(
 	'rejects overlapping writable and protected paths',
 	({ writable, protectedPath }) => {
-		expect(() => {
-			assertDisjointPaths(writable, [protectedPath]);
-		}).toThrow();
+		expect(
+			thrown(() => {
+				assertDisjointPaths(writable, [protectedPath]);
+			})
+		).toStrictEqual(new OverlappingPathsError(writable, protectedPath));
 	}
 );
 

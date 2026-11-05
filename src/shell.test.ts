@@ -29,6 +29,6 @@ it('separates the gate, target environment and literal shell script', () => {
 			environment: { VALUE: "a'b\n$HOME" }
 		})
 	).toBe(
-		"IFS= read -r token || exit 125; [ \"$token\" = 'job-token' ] || exit 125; exec /usr/bin/env -i 'VALUE=a'\\''b\n$HOME' '/bin/bash' -c 'printf \"$HOME\"'"
+		"IFS= read -r token || exit 125; [ \"$token\" = 'job-token' ] || exit 125; exec /usr/bin/env -i -- 'VALUE=a'\\''b\n$HOME' '/bin/bash' -c 'printf \"$HOME\"'"
 	);
 });

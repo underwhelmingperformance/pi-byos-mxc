@@ -1,5 +1,8 @@
+import type { Static } from 'typebox';
 import { Type } from 'typebox';
 import { Compile } from 'typebox/compile';
+
+import { InvalidSettingsError } from './errors.js';
 
 const absolutePath = Type.String({ pattern: '^/[^\\u0000]*$' });
 const text = Type.String({ pattern: '^[^\\u0000]*$' });
@@ -26,22 +29,24 @@ const schema = Type.Object(
 );
 const validator = Compile(schema);
 
-export interface MxcConfig {
-	readonly backend: 'auto' | 'seatbelt' | 'bubblewrap';
-	readonly network: 'ip-denied' | 'open-egress';
-	readonly shells: Readonly<{ sh: string; bash?: string }>;
-	readonly readonlyPaths: readonly string[];
-	readonly environment: Readonly<Record<string, string>>;
-}
+type MxcSettings = Static<typeof schema>;
 
-export class MxcConfigError extends Error {
-	override readonly name = 'MxcConfigError';
-}
+export type MxcConfig = {
+	readonly [Key in keyof MxcSettings]-?: Readonly<
+		Exclude<MxcSettings[Key], undefined>
+	>;
+};
 
 export function validateConfig(input: unknown): MxcConfig {
 	if (!validator.Check(input)) {
-		throw new MxcConfigError(
-			'Invalid MXC settings. Use supported backend/network modes, absolute paths and string environment values.'
+		const paths = new Set(
+			validator.Errors(input).map((error) => error.instancePath)
+		);
+
+		throw new InvalidSettingsError(
+			[...paths].filter((candidate) =>
+				[...paths].every((other) => !other.startsWith(`${candidate}/`))
+			)
 		);
 	}
 

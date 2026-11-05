@@ -66,10 +66,22 @@ separate Node DNS resolver probe also succeeded under ingress denial. Connected
 UDP DNS was verified against the controlled peer with the complete expected
 response packet.
 
-These successes do not repair default UDP dig. The original failing matrix case
-remains in place. The public ingress API exposes only `default` and
+These successes do not repair default UDP dig, and Apple's `host` and `nslookup`
+fail the same way. The public ingress API exposes only `default` and
 `hostLoopback`, not a narrow exception for this receive pattern. Enabling
 ingress would change the approved boundary.
+
+The restriction comes from Seatbelt itself. With `sandbox-exec` and MXC's
+network rules, and no MXC involved, dig fails in the same way. Adding
+`(allow network-inbound (remote udp "*:53"))` or
+`(allow network-inbound (remote ip "*:53"))` does not help. Only
+`(allow network-inbound (local udp "*:*"))` makes dig work, and that rule admits
+unsolicited datagrams to any bound UDP socket. No Seatbelt rule tried here
+admits replies alone, so an MXC option for this receive pattern is unlikely.
+
+The network gate now uses `dig +tcp` for its macOS DNS case and keeps a separate
+UDP dig case that expects the query to reach the peer and the reply to be
+refused.
 
 On Linux, both controlled network matrices pass all eight cases. Direct dig
 9.18.39 probes also receive the expected UDP answer under Bubblewrap with open

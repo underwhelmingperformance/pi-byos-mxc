@@ -1,13 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import {
-	mkdir,
-	realpath,
-	rename,
-	rm,
-	unlink,
-	writeFile
-} from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import type {
@@ -20,40 +10,48 @@ import {
 	SandboxStartupError
 } from 'pi-bring-your-own-sandbox/api';
 
+import {
+	AllocationCancelledError,
+	InvalidJobIdError,
+	UnregisteredJobError
+} from './errors.js';
+import type { Host, HostFileSystem } from './host.js';
 import { assertDisjointPaths } from './paths.js';
 import type { JobAllocation } from './supervisor/client.js';
 
 export class RecoveryStore {
 	static async open(
 		workspace: string,
-		context: SandboxOpenContext
+		context: SandboxOpenContext,
+		host: Host
 	): Promise<RecoveryStore> {
-		const base = await realpath(tmpdir());
-		const canonicalWorkspace = await realpath(workspace);
-		const id = randomUUID();
+		const { fs } = host;
+		const base = await fs.realpath(host.environment.temporaryDirectory);
+		const canonicalWorkspace = await fs.realpath(workspace);
+		const id = host.randomId();
 		const root = path.join(base, `pi-byos-mxc-${id}`);
 
 		assertDisjointPaths(canonicalWorkspace, [root]);
 
-		const store = new RecoveryStore(root, id);
+		const store = new RecoveryStore(fs, root, id);
 		let hasCreated = false;
 
 		context.reportRecovery(store.recovery);
 
 		try {
-			if (context.signal.aborted || context.deadline <= Date.now()) {
-				throw new Error('MXC opening was cancelled before allocation.');
+			if (context.signal.aborted) {
+				throw new AllocationCancelledError();
 			}
 
-			await mkdir(root, { mode: 0o700 });
+			await fs.mkdir(root, { mode: 0o700 });
 			hasCreated = true;
-			await mkdir(store.scratch, { mode: 0o700 });
+			await fs.mkdir(store.scratch, { mode: 0o700 });
 
 			return store;
 		} catch (error) {
 			if (hasCreated) {
 				try {
-					await rm(root, { recursive: true, force: true });
+					await fs.rm(root, { recursive: true, force: true });
 				} catch (cleanupError) {
 					throw new SandboxCleanupError(
 						{ operation: 'open', providerId: 'mxc', recovery: store.recovery },
@@ -69,14 +67,18 @@ export class RecoveryStore {
 		}
 	}
 
+	readonly #fs: HostFileSystem;
 	readonly #jobs = new Set<string>();
 	#isClosing = false;
 	#disposal: Promise<void> | undefined;
+	readonly id: string;
 	readonly root: string;
 	readonly scratch: string;
 	readonly recovery: RecoveryDescriptor;
 
-	private constructor(root: string, id: string) {
+	private constructor(fs: HostFileSystem, root: string, id: string) {
+		this.#fs = fs;
+		this.id = id;
 		this.root = root;
 		this.scratch = path.join(root, 'scratch');
 		this.recovery = Object.freeze({
@@ -90,9 +92,7 @@ export class RecoveryStore {
 
 	#jobPath(id: string): string {
 		if (!/^[a-z\d-]+$/u.test(id)) {
-			throw new TypeError(
-				'Recovery job IDs must contain only lowercase letters, digits and hyphens.'
-			);
+			throw new InvalidJobIdError(id);
 		}
 
 		return path.join(this.root, `${id}.json`);
@@ -107,7 +107,7 @@ export class RecoveryStore {
 			});
 		}
 
-		await rm(this.root, { recursive: true, force: true });
+		await this.#fs.rm(this.root, { recursive: true, force: true });
 	}
 
 	async begin(id: string): Promise<void> {
@@ -118,7 +118,7 @@ export class RecoveryStore {
 			});
 		}
 
-		await writeFile(this.#jobPath(id), JSON.stringify({ id }), {
+		await this.#fs.writeFile(this.#jobPath(id), JSON.stringify({ id }), {
 			flag: 'wx',
 			mode: 0o600
 		});
@@ -127,9 +127,7 @@ export class RecoveryStore {
 
 	async record(allocation: JobAllocation): Promise<void> {
 		if (!this.#jobs.has(allocation.id)) {
-			throw new Error(
-				'A recovery allocation must be registered before its identity is updated.'
-			);
+			throw new UnregisteredJobError(allocation.id);
 		}
 
 		const destination = this.#jobPath(allocation.id);
@@ -142,15 +140,16 @@ export class RecoveryStore {
 			})
 		};
 
-		await writeFile(temporary, JSON.stringify(record), {
+		await this.#fs.rm(temporary, { recursive: false, force: true });
+		await this.#fs.writeFile(temporary, JSON.stringify(record), {
 			flag: 'wx',
 			mode: 0o600
 		});
-		await rename(temporary, destination);
+		await this.#fs.rename(temporary, destination);
 	}
 
 	async confirmReleased(id: string): Promise<void> {
-		await unlink(this.#jobPath(id));
+		await this.#fs.unlink(this.#jobPath(id));
 		this.#jobs.delete(id);
 	}
 

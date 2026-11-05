@@ -3,9 +3,11 @@ import type {
 	SandboxOpenContext,
 	SandboxPolicy
 } from 'pi-bring-your-own-sandbox/api';
+import { UnsupportedSandboxPolicyError } from 'pi-bring-your-own-sandbox/api';
 import { expect, it } from 'vitest';
 
 import { validateConfig } from './config.js';
+import { cleanupControl } from './fixtures/cleanup.js';
 import { EFFECTIVE_POLICY } from './policy.js';
 import { provider } from './provider.js';
 
@@ -20,15 +22,15 @@ it('advertises process-group shell execution and delegated policy defaults', () 
 		id: 'mxc',
 		protocolVersion: 1,
 		capabilities: {
-			operations: ['exec'],
+			operations: ['exec', 'workspace.protection'],
 			processKinds: ['shell'],
 			shells: ['sh', 'bash'],
 			exitStatus: 'optional',
 			terminationScope: 'process-group'
 		},
 		policies: {
-			workspaceAccess: ['read-write'],
-			filesystemScope: ['provider-default'],
+			workspaceAccess: ['read-write', 'read-only'],
+			filesystemScope: ['provider-default', 'system-read-only'],
 			networkAccess: ['provider-default']
 		},
 		defaultPolicy: EFFECTIVE_POLICY
@@ -36,7 +38,6 @@ it('advertises process-group shell execution and delegated policy defaults', () 
 });
 
 it.each<SandboxPolicy>([
-	{ ...EFFECTIVE_POLICY, workspaceAccess: 'read-only' },
 	{ ...EFFECTIVE_POLICY, filesystemScope: 'workspace-only' },
 	{ ...EFFECTIVE_POLICY, networkAccess: 'denied' }
 ])('rejects unsupported policy before allocation: %j', async (policy) => {
@@ -45,8 +46,9 @@ it.each<SandboxPolicy>([
 	const context: SandboxOpenContext = {
 		operationId: 'open',
 		signal: new AbortController().signal,
-		deadline: Date.now() + 1000,
-		cleanup: { deadline: undefined },
+		deadline: 1000,
+		remainingMs: () => 10_000,
+		cleanup: cleanupControl().cleanup,
 		reportDiagnostic() {
 			return;
 		},
@@ -69,7 +71,9 @@ it.each<SandboxPolicy>([
 			},
 			context
 		)
-	).rejects.toMatchObject({ name: 'UnsupportedSandboxPolicyError' });
+	).rejects.toStrictEqual(
+		new UnsupportedSandboxPolicyError({ operation: 'open', providerId: 'mxc' })
+	);
 	expect({ recoveries, isConfirmed }).toStrictEqual({
 		recoveries: [{ kind: 'none' }],
 		isConfirmed: true

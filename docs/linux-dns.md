@@ -1,13 +1,19 @@
 # Linux resolver-file grants
 
-The adapter's automatic exact resolver-file grant breaks open-egress DNS on
-hosts whose resolver file specifies only loopback nameservers, including an IPv4
-address. This is an adapter configuration bug. MXC intentionally treats an
-explicit grant on the resolver file as a caller-supplied resolver and disables
-its automatic substitution.
+The adapter's automatic exact resolver-file grant broke open-egress DNS on hosts
+whose resolver file specifies only loopback nameservers, including an IPv4
+address. MXC intentionally treats an explicit grant on the resolver file as a
+caller-supplied resolver and disables its automatic substitution.
 
-The runtime has not been changed by this investigation. Passing OrbStack gates
-does not establish support for loopback-stub configurations.
+The adapter now applies MXC's own test before granting the file: when every
+nameserver is a loopback address and at least one is IPv4, it adds no grant, so
+MXC substitutes slirp's forwarder. Other resolver files are still granted. Unit
+tests cover the decision. On the Linux ARM64 OrbStack machine,
+`/etc/resolv.conf` was temporarily replaced with a file listing only
+`127.0.0.53`, with a forwarding stub listening on that address. The external
+HTTPS test then passed under open egress with the corrected adapter, and failed
+when the adapter was patched back to granting the resolver file. The amd64
+machine was not rerun.
 
 ## Controlled results
 
@@ -79,6 +85,21 @@ checks successful automatic substitution, but does not add our exact-file grant.
   https://github.com/microsoft/mxc/blob/fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2/src/mxc-sdk/src/backends/bubblewrap/common/proxy_network.rs#L1471-L1551
 [runtime-test]:
   https://github.com/microsoft/mxc/blob/fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2/tests/scripts/run_bwrap_dns_test.sh
+
+## Resolver service sockets
+
+MXC 1.0.1 read-only binds `/run/systemd/resolve`, `/run/NetworkManager` and
+`/run/resolvconf` so resolver symlinks keep working. When systemd-resolved is
+running, `/run/systemd/resolve` also contains its Varlink sockets. A probe in
+`ip-denied` mode called `ResolveHostname` through `io.systemd.Resolve`, and an
+independent DNS server outside the sandbox recorded the query.
+
+Denying the whole directory breaks DNS when `/etc/resolv.conf` links into it.
+The adapter instead lists the sockets in these directories before each command
+and passes them as `deniedPaths`. MXC mounts `/dev/null` over each denied
+socket. With systemd-resolved started on the ARM64 machine, the provider test
+found neither socket inside the sandbox; with the denial removed, both were
+present. Open-egress DNS still resolved through slirp's forwarder.
 
 ## Correction constraints
 

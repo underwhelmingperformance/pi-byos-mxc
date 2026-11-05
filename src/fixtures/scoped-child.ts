@@ -5,6 +5,8 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
+import { expect } from 'vitest';
+
 import { nodeCommand } from './native-sandbox.js';
 
 const execute = promisify(execFile);
@@ -57,16 +59,9 @@ export class ScopedChild {
 		readonly restrictions: unknown;
 	}> {
 		const heartbeat = await readFile(this.#heartbeat);
-		let restrictions: unknown;
-
-		try {
-			restrictions = JSON.parse(await readFile(this.#status, 'utf8'));
-		} catch (error) {
-			throw new Error(
-				'The scope fixture did not produce a readable JSON status.',
-				{ cause: error }
-			);
-		}
+		const restrictions: unknown = JSON.parse(
+			await readFile(this.#status, 'utf8')
+		);
 
 		return { heartbeat: heartbeat.byteLength, restrictions };
 	}
@@ -84,8 +79,6 @@ export class ScopedChild {
 			await delay(100);
 		}
 
-		throw new Error(
-			'The finite cross-session fixture did not stop within its cleanup deadline.'
-		);
+		expect(await this.liveIds()).toStrictEqual([]);
 	}
 }

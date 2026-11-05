@@ -21,6 +21,8 @@ import {
 	VERSION
 } from '@earendil-works/pi-coding-agent';
 
+import { PiRuntimeError } from './errors.js';
+
 interface RuntimeOptions {
 	readonly prepare?: (
 		directory: string,
@@ -125,9 +127,7 @@ export async function withPiRuntime(
 			await runtime.dispose();
 		}
 	} catch (error) {
-		throw new Error(`Pi ${VERSION} on Node ${process.version}`, {
-			cause: error
-		});
+		throw new PiRuntimeError(VERSION, process.version, { cause: error });
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

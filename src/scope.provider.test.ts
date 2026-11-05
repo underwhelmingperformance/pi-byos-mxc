@@ -8,12 +8,15 @@ import {
 	getSandbox,
 	initialiseSandboxHost
 } from 'pi-bring-your-own-sandbox/api';
-import { expect, it } from 'vitest';
+import { assert, expect, it } from 'vitest';
 
 import mxc from './extension.js';
 import { CommandChecks } from './fixtures/command-checks.js';
+import { nodeReadonlyPaths } from './fixtures/node-runtime.js';
 import { withPiRuntime } from './fixtures/pi-runtime.js';
 import { ScopedChild } from './fixtures/scoped-child.js';
+
+const nodePaths = await nodeReadonlyPaths();
 
 async function observeExecution(
 	running: Promise<ProcessResult>
@@ -73,19 +76,15 @@ it('preserves the declared boundary when a waiting child changes session across 
 										return;
 									}
 
-									if (
-										phase !== 'start' ||
-										probe === undefined ||
-										sandbox.workspace.home === undefined
-									) {
-										throw new Error('The scope fixture was not prepared.');
-									}
+									expect(phase).toBe('start');
+									assert.isDefined(probe);
+									assert.isDefined(sandbox.workspace.home);
 
 									oldRoot = path.dirname(sandbox.workspace.home);
 									oldBackend = sandbox.backendId;
 
 									const controller = new AbortController();
-									const ready = Promise.withResolvers<undefined>();
+									const ready = Promise.withResolvers<'ready'>();
 									let output = '';
 
 									const running = sandbox.exec(
@@ -101,23 +100,16 @@ it('preserves the declared boundary when a waiting child changes session across 
 												output += new TextDecoder().decode(chunk.data);
 
 												if (output.includes('ready')) {
-													ready.resolve(undefined);
+													ready.resolve('ready');
 												}
 											}
 										}
 									);
 									const completion = observeExecution(running);
 
-									async function endedBeforeReady(): Promise<never> {
-										const result = await completion;
-
-										throw new Error(
-											'The scope fixture ended before readiness.',
-											{ cause: result }
-										);
-									}
-
-									await Promise.race([ready.promise, endedBeforeReady()]);
+									expect(await Promise.race([ready.promise, completion])).toBe(
+										'ready'
+									);
 
 									const id: unknown = expect.any(Number);
 
@@ -139,9 +131,8 @@ it('preserves the declared boundary when a waiting child changes session across 
 				await runtime.session.prompt('/verify-scope start');
 				checks.verify(1);
 
-				if (oldRoot === undefined || probe === undefined) {
-					throw new Error('The scope fixture did not start its child.');
-				}
+				assert.isDefined(oldRoot);
+				assert.isDefined(probe);
 
 				const before = await probe.snapshot();
 
@@ -195,7 +186,7 @@ it('preserves the declared boundary when a waiting child changes session across 
 						JSON.stringify({
 							provider: 'mxc',
 							providerConfig: {
-								readonlyPaths: [path.dirname(process.execPath), readonly]
+								readonlyPaths: [...nodePaths, readonly]
 							},
 							cleanup: {
 								cancellationGraceMs: 10_000,

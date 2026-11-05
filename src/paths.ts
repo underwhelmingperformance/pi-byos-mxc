@@ -1,6 +1,13 @@
 import path from 'node:path';
 
-import { MxcConfigError } from './config.js';
+import { OverlappingPathsError } from './errors.js';
+
+/**
+Compares two strings by UTF-16 code unit, independently of the host locale.
+*/
+export function compareText(left: string, right: string): number {
+	return Number(left > right) - Number(left < right);
+}
 
 export function isPathWithin(parent: string, child: string): boolean {
 	const relative = path.relative(parent, child);
@@ -22,9 +29,7 @@ export function assertDisjointPaths(
 			isPathWithin(writable, protectedPath) ||
 			isPathWithin(protectedPath, writable)
 		) {
-			throw new MxcConfigError(
-				'Writable workspace/scratch paths must be separate from trusted runtime files, recovery metadata and read-only grants.'
-			);
+			throw new OverlappingPathsError(writable, protectedPath);
 		}
 	}
 }

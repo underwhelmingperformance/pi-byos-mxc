@@ -10,11 +10,11 @@ replay the command, fall back to host execution or silently reopen the backend.
 
 Before allocation, BYOS receives an aggregate allocation descriptor with a
 private generation-root path and no automatic expiry. The root contains private
-job records with version, job identifier, supervisor PID and, once known, the
-target PID. Startup checks that the target is the original process-group leader
-before releasing the command. An uncertain record does not confirm that the
-leader check passed. Commands, caller environment and credentials are not
-persisted there.
+job records with the job identifier, supervisor PID and, once known, the target
+PID. Startup checks that the target is the original process-group leader before
+releasing the command. An uncertain record does not confirm that the leader
+check passed. Commands, caller environment and credentials are not persisted
+there.
 
 A record identifies known provider ownership. The descriptor and journal do not
 close the allocation-before-acknowledgement crash window. Missing target

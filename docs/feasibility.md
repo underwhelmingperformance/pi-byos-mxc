@@ -138,18 +138,88 @@ host-local TCP denial, the accessible UNIX-socket exception, hard supervisor
 crash recovery and the cross-session scope boundary. This is experimental
 evidence for the tested cases, not a guarantee for every interleaving.
 
+At BYOS `9af3b12` and Pi 1.5.0, `pnpm check` passes with 159 unit tests and 23
+integration tests on macOS ARM64 and on the Linux ARM64 and x64 machines, and
+under Node 24.21.0 on macOS. The unit tests use an in-memory host filesystem,
+Git, clock and supervisor process; the integration tests use the real host.
+`pnpm test:provider` passes 23 tests on all three hosts. The network gate passes
+all 10 macOS cases and all 8 Linux ARM64 cases. The Linux resolver-socket test
+is skipped unless systemd-resolved is running; it passed with systemd-resolved
+temporarily started, and failed with the denial removed.
+
+## Command latency
+
+On macOS ARM64, one `:` command took about 370 ms through the backend. The
+supervisor spent about 205 ms starting: Node took 40 ms, the MXC SDK 35 ms and
+TypeBox about 125 ms. Two `ps` snapshots took about 35 ms each. MXC's
+`MxcProcess.wait()` polls for exit every 100 ms, so most of the time between
+release and completion was spent waiting for the next poll.
+
+The supervisor now validates parent messages with a small guard instead of
+TypeBox, and process-group checks use signal 0 before falling back to `ps`. A
+command now takes about 215 ms and opening a backend about 580 ms, down from 1.1
+s. Of the remaining time, about 90 ms is supervisor startup and up to 100 ms is
+MXC's exit polling. `run()` of the same command takes about 30 ms, which is
+close to the floor for a Seatbelt process.
+
+A persistent supervisor per backend would remove the 90 ms startup from every
+command. An upstream change to resolve `wait()` without polling would remove
+most of the rest.
+
+## System-read-only scope
+
+MXC's Linux baseline binds only system locations: `/bin`, `/sbin`, `/lib*`,
+`/usr/{bin,sbin,lib*,libexec,share}`, `/etc` and the resolver directories, with
+a new `/dev`, `/proc` and `/tmp`. The Seatbelt baseline reads system directories
+under `/System`, `/Library`, `/usr` and `/private/etc`. A probe could not list
+or read the macOS home directory, but `stat` of `~/.ssh` succeeded because
+Seatbelt allows metadata reads.
+
+`src/filesystem-scope.provider.test.ts` checks that a `system-read-only` sandbox
+reads `/etc/hosts` but cannot read a file in the host home directory or list
+that directory, and that a configured home-directory grant makes opening fail.
+With a home-directory grant under `provider-default`, the same read check fails,
+so the probe detects home access.
+
+## Workspace protection
+
+Direct MXC 1.0.1 probes established what each backend can enforce for a
+read-only entry inside a writable workspace. Each mutation was checked from the
+host afterwards.
+
+| Case                                             | Seatbelt        | Bubblewrap     |
+| ------------------------------------------------ | --------------- | -------------- |
+| Write, chmod, unlink, rename or rename-over      | Blocked         | Blocked        |
+| Alias created inside the sandbox                 | Blocked         | Blocked        |
+| Absent entry                                     | Blocked         | Startup fails  |
+| Case alias on a case-insensitive volume          | Blocked         | Not applicable |
+| Rename of an unprotected parent directory        | Allowed         | Allowed        |
+| Hard link created on the host before the sandbox | Writable        | Writable       |
+| Protected entry that is a symbolic link          | Target writable | Link removable |
+
+The provider therefore requires protected paths to be covered by a protected
+top-level entry, rejects hard-linked files and symbolic links to writable files
+in protected trees, and on Linux rejects absent entries and symbolic links.
+`src/protection.provider.test.ts` applies the `host-configuration` preset
+through Pi and BYOS and repeats the mutation matrix against real sandboxes. It
+passes on macOS ARM64 and Linux ARM64. On macOS, the same test fails without the
+protection policy because the mutations move `.git` and `.pi`.
+
 The separate `pnpm test:network` gate now runs with an HTTPS endpoint and a
 controlled IPv4 peer. The two HTTPS cases pass against `https://example.com`.
 The peer supplies TCP, UDP and DNS responses and independently counts unique
 probe identifiers. Host controls run before and after target probes. Five of six
 peer cases pass: both TCP cases, both UDP cases and denied DNS.
 
-Open-egress DNS fails. The peer records the query, but sandboxed `/usr/bin/dig`
-prints `;; communications error: permission denied` and does not return the
-expected answer. The same tool succeeds outside MXC. The cause is not yet
-established, and the test remains failing. This is seven passing cases out of
-eight, not network acceptance. Ingress, expanded loopback and IPv6 coverage
-remain incomplete.
+Open-egress DNS failed in that run. The peer recorded the query, but sandboxed
+`/usr/bin/dig` printed `;; communications error: permission denied`. The [macOS
+DNS notes][macos-dns] trace this to Seatbelt's treatment of receives on
+unconnected UDP sockets. The gate now uses `dig +tcp` for the DNS case and keeps
+a UDP dig case that expects the refused reply. With those cases, all ten macOS
+network cases pass against the OrbStack fixture peer. Ingress, expanded loopback
+and IPv6 coverage remain incomplete.
+
+[macos-dns]: macos-dns.md
 
 Host Node and the Nix-provided curl cannot contact these local VM endpoints in
 the tested host environment; Apple system tools can. The macOS matrix uses Apple
@@ -248,8 +318,10 @@ A subsequent controlled [resolver-grant investigation][linux-dns] found that the
 automatic exact-file grant disables MXC's resolver substitution for
 loopback-stub hosts. Native and public-SDK comparisons confirmed both the
 working substitution and the contrasting out-of-baseline non-loopback case. The
-adapter still needs a resolver-grant correction; the passing OrbStack gates do
-not cover that configuration.
+adapter now skips the grant for loopback-only resolvers. With a temporary
+loopback-only resolver and forwarding stub on the ARM64 machine, the external
+HTTPS test passes under open egress with the corrected adapter and fails with
+the previous grant. The [resolver notes][linux-dns] describe the check.
 
 [linux-dns]: linux-dns.md
 

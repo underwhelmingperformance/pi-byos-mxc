@@ -12,7 +12,9 @@ const environment = Type.Record(
 );
 const version = Type.Literal(1);
 
-export const startSchema = Type.Object({
+export const MAX_START_BYTES = 1_048_576;
+
+const startSchema = Type.Object({
 	version,
 	kind: Type.Literal('start'),
 	id,
@@ -21,22 +23,16 @@ export const startSchema = Type.Object({
 	command: text,
 	shell: absolutePath,
 	cwd: absolutePath,
-	workspace: absolutePath,
-	scratch: absolutePath,
+	readwritePaths: Type.Array(absolutePath),
 	environment,
 	readonlyPaths: Type.Array(absolutePath),
-	deadline: Type.Number({ minimum: 1 })
+	deniedPaths: Type.Array(absolutePath)
 });
 
 const parentSchema = Type.Union([
 	startSchema,
 	Type.Object({ version, kind: Type.Literal('release'), id }),
-	Type.Object({
-		version,
-		kind: Type.Literal('cancel'),
-		id,
-		deadline: Type.Number({ minimum: 1 })
-	})
+	Type.Object({ version, kind: Type.Literal('cancel'), id })
 ]);
 const childSchema = Type.Union([
 	Type.Object({ version, kind: Type.Literal('ready') }),
@@ -51,7 +47,6 @@ const childSchema = Type.Union([
 		kind: Type.Literal('completed'),
 		id,
 		exitCode: Type.Integer(),
-		timedOut: Type.Boolean(),
 		warnings: Type.Integer({ minimum: 0, maximum: 64 })
 	}),
 	Type.Object({ version, kind: Type.Literal('failed'), id })

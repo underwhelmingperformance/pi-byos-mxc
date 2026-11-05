@@ -6,11 +6,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { expect, it } from 'vitest';
+import { assert, expect, it } from 'vitest';
 
+import { InjectedFailure } from './fixtures/errors.js';
 import { nodeCommand, withNativeSandbox } from './fixtures/native-sandbox.js';
+import { nodeReadonlyPaths } from './fixtures/node-runtime.js';
 
-const nodeConfig = { readonlyPaths: [path.dirname(process.execPath)] };
+const nodePaths = await nodeReadonlyPaths();
+
+const nodeConfig = { readonlyPaths: [...nodePaths] };
 const execute = promisify(execFile);
 
 it('drains binary output beyond the shared capture limit', async () => {
@@ -50,7 +54,7 @@ it('keeps confirmed output-callback cancellation distinct from lost termination'
 				{ kind: 'shell', dialect: 'sh', command: 'printf ready; sleep 5' },
 				{
 					onOutput() {
-						throw new Error('Stop the consumer.');
+						throw new InjectedFailure('output');
 					}
 				}
 			)
@@ -156,9 +160,7 @@ it('blocks direct host-loopback TCP despite a host-reachable listener', async ()
 
 	const address = server.address();
 
-	if (typeof address !== 'object' || !address) {
-		throw new Error('The TCP fixture did not open a port.');
-	}
+	assert(typeof address === 'object' && address !== null);
 
 	try {
 		await new Promise<void>((resolve, reject) => {

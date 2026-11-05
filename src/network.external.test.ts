@@ -1,8 +1,10 @@
-import path from 'node:path';
-
 import { expect, it } from 'vitest';
 
+import { InvalidFixtureSettingError } from './fixtures/errors.js';
 import { nodeCommand, withNativeSandbox } from './fixtures/native-sandbox.js';
+import { nodeReadonlyPaths } from './fixtures/node-runtime.js';
+
+const nodePaths = await nodeReadonlyPaths();
 
 it.each(['ip-denied', 'open-egress'] as const)(
 	'checks external HTTPS with %s',
@@ -10,8 +12,10 @@ it.each(['ip-denied', 'open-egress'] as const)(
 		const fixture = process.env.MXC_EGRESS_TEST_URL;
 
 		if (fixture === undefined) {
-			throw new Error(
-				'Set MXC_EGRESS_TEST_URL to a reachable external HTTPS fixture that returns status 200.'
+			throw new InvalidFixtureSettingError(
+				'MXC_EGRESS_TEST_URL',
+				fixture,
+				'a reachable external HTTPS fixture that returns status 200'
 			);
 		}
 
@@ -22,13 +26,15 @@ it.each(['ip-denied', 'open-egress'] as const)(
 			url.username !== '' ||
 			url.password !== ''
 		) {
-			throw new Error(
-				'The egress fixture must use HTTPS without URL credentials.'
+			throw new InvalidFixtureSettingError(
+				'MXC_EGRESS_TEST_URL',
+				fixture,
+				'an HTTPS URL without credentials'
 			);
 		}
 
 		await withNativeSandbox(
-			{ network, readonlyPaths: [path.dirname(process.execPath)] },
+			{ network, readonlyPaths: [...nodePaths] },
 			async (sandbox) => {
 				const script = `const r=require('node:https').get(${JSON.stringify(url.href)},s=>{s.resume();s.on('end',()=>console.log(s.statusCode));});r.setTimeout(5000,()=>r.destroy(new Error('timeout')));r.on('error',()=>console.log('blocked'));`;
 				const result = await sandbox.exec(

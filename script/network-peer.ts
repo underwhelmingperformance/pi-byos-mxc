@@ -3,7 +3,8 @@ import { createSocket } from 'node:dgram';
 import { once } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
-import { isIP } from 'node:net';
+import type { Socket as Stream } from 'node:net';
+import { createServer as createStreamServer, isIP } from 'node:net';
 
 interface Ports {
 	readonly http: number;
@@ -17,9 +18,42 @@ interface Counts {
 	readonly dns: number;
 }
 
+interface OpenPorts extends Ports {
+	readonly dnsTcp: number;
+}
+
 type Protocol = keyof Counts;
 
 const defaultPorts: Ports = { http: 18_080, udp: 18_081, dns: 18_082 };
+
+class InvalidBindAddressError extends Error {
+	override readonly name = 'InvalidBindAddressError';
+	readonly host: string;
+
+	constructor(host: string) {
+		super(`${host} is not a specific IPv4 bind address.`);
+		this.host = host;
+	}
+}
+
+class ListenersClosedError extends Error {
+	override readonly name = 'ListenersClosedError';
+
+	constructor() {
+		super('The network peer TCP listeners are not open.');
+	}
+}
+
+class UsageError extends Error {
+	override readonly name = 'UsageError';
+	readonly arguments: readonly string[];
+
+	constructor(commandArguments: readonly string[]) {
+		super('Usage: node script/network-peer.ts IPV4_BIND_ADDRESS');
+		this.arguments = commandArguments;
+	}
+}
+
 const tokenPattern = /^[0-9a-f]{32}$/;
 
 export class NetworkPeer {
@@ -28,16 +62,19 @@ export class NetworkPeer {
 		ports: Ports = defaultPorts
 	): Promise<NetworkPeer> {
 		if (host === '0.0.0.0' || isIP(host) !== 4) {
-			throw new Error('Use a specific IPv4 bind address.');
+			throw new InvalidBindAddressError(host);
 		}
 
 		const peer = new NetworkPeer();
 		const http = once(peer.#http, 'listening');
+		const dnsTcp = once(peer.#dnsTcp, 'listening');
 
 		peer.#http.listen(ports.http, host);
+		peer.#dnsTcp.listen(ports.dns, host);
 
 		const results = await Promise.allSettled([
 			http,
+			dnsTcp,
 			peer.#bind(peer.#udp, host, ports.udp),
 			peer.#bind(peer.#dns, host, ports.dns)
 		]);
@@ -46,9 +83,7 @@ export class NetworkPeer {
 		if (failure !== undefined) {
 			await peer.close();
 
-			throw new Error('The network peer could not open its listeners.', {
-				cause: failure.reason
-			});
+			throw failure.reason;
 		}
 
 		return peer;
@@ -122,6 +157,10 @@ export class NetworkPeer {
 	});
 	readonly #udp = createSocket('udp4');
 	readonly #dns = createSocket('udp4');
+	readonly #streams = new Set<Stream>();
+	readonly #dnsTcp = createStreamServer((stream) => {
+		this.#answerStream(stream);
+	});
 	#closing: Promise<void> | undefined;
 
 	private constructor() {
@@ -138,6 +177,51 @@ export class NetworkPeer {
 
 			this.#record(answer.token, 'dns');
 			this.#dns.send(answer.reply, remote.port, remote.address);
+		});
+	}
+
+	#answerStream(stream: Stream): void {
+		let received = Buffer.alloc(0);
+
+		this.#streams.add(stream);
+		stream.setTimeout(5000, () => stream.destroy());
+		stream.on('close', () => this.#streams.delete(stream));
+		stream.on('error', () => stream.destroy());
+		stream.on('end', () => stream.end());
+		stream.on('data', (chunk: Buffer) => {
+			received = Buffer.concat([received, chunk]);
+
+			if (received.length > 514) {
+				stream.destroy();
+
+				return;
+			}
+
+			if (received.length < 2) {
+				return;
+			}
+
+			const size = received.readUInt16BE(0);
+
+			if (received.length < 2 + size) {
+				return;
+			}
+
+			const answer = NetworkPeer.dnsAnswer(received.subarray(2, 2 + size));
+
+			received = received.subarray(2 + size);
+
+			if (answer === undefined) {
+				stream.destroy();
+
+				return;
+			}
+
+			const length = Buffer.alloc(2);
+
+			length.writeUInt16BE(answer.reply.length);
+			this.#record(answer.token, 'dns');
+			stream.write(Buffer.concat([length, answer.reply]));
 		});
 	}
 
@@ -158,6 +242,20 @@ export class NetworkPeer {
 					});
 				})
 		);
+
+		if (this.#dnsTcp.listening) {
+			closing.push(
+				new Promise((resolve) => {
+					this.#dnsTcp.close(() => {
+						resolve();
+					});
+
+					for (const stream of this.#streams) {
+						stream.destroy();
+					}
+				})
+			);
+		}
 
 		if (this.#http.listening) {
 			closing.push(
@@ -220,17 +318,24 @@ export class NetworkPeer {
 		response.writeHead(404).end();
 	}
 
-	get ports(): Ports {
+	get ports(): OpenPorts {
 		const http = this.#http.address();
+		const dnsTcp = this.#dnsTcp.address();
 
-		if (http === null || typeof http === 'string') {
-			throw new Error('The network peer HTTP listener is not open.');
+		if (
+			http === null ||
+			typeof http === 'string' ||
+			dnsTcp === null ||
+			typeof dnsTcp === 'string'
+		) {
+			throw new ListenersClosedError();
 		}
 
 		return {
 			http: http.port,
 			udp: this.#udp.address().port,
-			dns: this.#dns.address().port
+			dns: this.#dns.address().port,
+			dnsTcp: dnsTcp.port
 		};
 	}
 
@@ -245,7 +350,7 @@ if (import.meta.main) {
 	const host = process.argv[2];
 
 	if (host === undefined || process.argv.length !== 3) {
-		throw new Error('Usage: node script/network-peer.ts IPV4_BIND_ADDRESS');
+		throw new UsageError(process.argv.slice(2));
 	}
 
 	const peer = await NetworkPeer.open(host);

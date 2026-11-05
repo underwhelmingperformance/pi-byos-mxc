@@ -1,5 +1,7 @@
 import type { ProcessEnvironment } from 'pi-bring-your-own-sandbox/api';
 
+export const SYSTEM_PATH = '/bin:/usr/bin:/usr/sbin:/sbin';
+
 interface ShellTransport {
 	readonly gate: string;
 	readonly shell: string;
@@ -7,7 +9,7 @@ interface ShellTransport {
 	readonly environment: Readonly<Record<string, string>>;
 }
 
-function quote(value: string): string {
+export function quote(value: string): string {
 	return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
@@ -38,6 +40,7 @@ export function transportCommand(invocation: ShellTransport): string {
 	const target = [
 		'/usr/bin/env',
 		'-i',
+		'--',
 		...environment,
 		quote(invocation.shell),
 		'-c',

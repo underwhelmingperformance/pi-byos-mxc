@@ -1,68 +1,133 @@
-import { expect, it, vi } from 'vitest';
+import { expect, it } from 'vitest';
 
-import { systemReadonlyPaths } from './system-paths.js';
+import { ResolverNotFileError } from '../errors.js';
+import { FileSystemError } from '../fixtures/errors.js';
+import { memoryHost } from '../fixtures/host.js';
+
+import { resolverSockets, systemReadonlyPaths } from './system-paths.js';
+
+const external = 'nameserver 0.250.250.200\n';
 
 it.each([
 	{
 		platform: 'linux',
-		resolved: '/opt/orbstack-guest/etc/resolv.conf',
+		target: '/opt/orbstack-guest/etc/resolv.conf',
 		expected: ['/opt/orbstack-guest/etc/resolv.conf']
 	},
 	{
 		platform: 'linux',
-		resolved: '/etc/resolv.conf',
+		target: '/etc/resolv.conf',
 		expected: ['/etc/resolv.conf']
 	},
-	{ platform: 'darwin', resolved: '/private/etc/resolv.conf', expected: [] }
+	{ platform: 'darwin', target: '/private/etc/resolv.conf', expected: [] }
 ] as const)(
-	'grants only the Linux resolver file: $resolved',
-	async ({ platform, resolved, expected }) => {
-		const io = {
-			canonicalize: vi.fn().mockResolvedValue(resolved),
-			isRegularFile: vi.fn().mockResolvedValue(true)
-		};
+	'grants only the Linux resolver file: $target',
+	async ({ platform, target, expected }) => {
+		const { host, memory } = memoryHost({ [target]: external });
 
-		expect(await systemReadonlyPaths(platform, io)).toStrictEqual(expected);
-		expect(io.canonicalize.mock.calls).toStrictEqual(
-			platform === 'linux' ? [['/etc/resolv.conf']] : []
+		if (target !== '/etc/resolv.conf') {
+			memory.mkdirSync('/etc', { recursive: true });
+			memory.symlinkSync(target, '/etc/resolv.conf');
+		}
+
+		expect(await systemReadonlyPaths(platform, host.fs)).toStrictEqual(
+			expected
 		);
-		expect(io.isRegularFile.mock.calls).toStrictEqual(
-			platform === 'linux' ? [[resolved]] : []
+	}
+);
+
+it.each([
+	{ contents: 'nameserver 127.0.0.53\noptions edns0\n', isGranted: false },
+	{ contents: 'nameserver 127.0.0.1\nnameserver ::1\n', isGranted: false },
+	{ contents: 'nameserver 127.0.0.53\r\nsearch lan\r\n', isGranted: false },
+	{ contents: 'nameserver ::1\n', isGranted: true },
+	{
+		contents: 'nameserver 127.0.0.53\nnameserver 192.0.2.2\n',
+		isGranted: true
+	},
+	{
+		contents: 'nameserver fe80::1%eth0\nnameserver 127.0.0.1\n',
+		isGranted: true
+	},
+	{
+		contents: ' nameserver 192.0.2.2\nnameserver 127.0.0.1\n',
+		isGranted: false
+	},
+	{
+		contents: '# nameserver 192.0.2.2\nnameserver 127.0.0.1\n',
+		isGranted: false
+	},
+	{ contents: 'search lan\n', isGranted: true }
+])(
+	'leaves MXC to replace a loopback-only resolver: $contents',
+	async ({ contents, isGranted }) => {
+		const { host } = memoryHost({ '/etc/resolv.conf': contents });
+
+		expect(await systemReadonlyPaths('linux', host.fs)).toStrictEqual(
+			isGranted ? ['/etc/resolv.conf'] : []
 		);
 	}
 );
 
 it('does not grant a directory through the resolver symlink', async () => {
-	const io = {
-		canonicalize: vi.fn().mockResolvedValue('/home/laney'),
-		isRegularFile: vi.fn().mockResolvedValue(false)
-	};
+	const { host, memory } = memoryHost({
+		'/home/user/.ssh': {},
+		'/etc': {}
+	});
 
-	await expect(systemReadonlyPaths('linux', io)).rejects.toThrow(
-		'regular file'
+	memory.symlinkSync('/home/user', '/etc/resolv.conf');
+
+	await expect(systemReadonlyPaths('linux', host.fs)).rejects.toStrictEqual(
+		new ResolverNotFileError('/home/user')
 	);
 });
 
 it('permits a host without a resolver file', async () => {
-	const io = {
-		canonicalize: vi
-			.fn()
-			.mockRejectedValue(
-				Object.assign(new Error('missing'), { code: 'ENOENT' })
-			),
-		isRegularFile: vi.fn()
-	};
+	const { host } = memoryHost();
 
-	expect(await systemReadonlyPaths('linux', io)).toStrictEqual([]);
-	expect(io.isRegularFile.mock.calls).toStrictEqual([]);
+	expect(await systemReadonlyPaths('linux', host.fs)).toStrictEqual([]);
 });
 
 it('does not turn an inaccessible resolver into an absent resolver', async () => {
-	const error = Object.assign(new Error('denied'), { code: 'EACCES' });
-	const io = {
-		canonicalize: vi.fn().mockRejectedValue(error),
-		isRegularFile: vi.fn()
-	};
+	const { host } = memoryHost();
+	const error = new FileSystemError('EACCES', 'realpath', '/etc/resolv.conf');
 
-	await expect(systemReadonlyPaths('linux', io)).rejects.toBe(error);
+	await expect(
+		systemReadonlyPaths('linux', {
+			...host.fs,
+			realpath: () => Promise.reject(error)
+		})
+	).rejects.toBe(error);
 });
+
+it.each([
+	{
+		platform: 'linux',
+		expected: [
+			'/run/NetworkManager/private-dhcp',
+			'/run/systemd/resolve/io.systemd.Resolve',
+			'/run/systemd/resolve/io.systemd.Resolve.Monitor'
+		]
+	},
+	{ platform: 'darwin', expected: [] }
+] as const)(
+	'denies the resolver service sockets that MXC mounts on $platform',
+	async ({ platform, expected }) => {
+		const sockets = [
+			'/run/systemd/resolve/io.systemd.Resolve',
+			'/run/systemd/resolve/io.systemd.Resolve.Monitor',
+			'/run/NetworkManager/private-dhcp',
+			'/run/dbus/system_bus_socket'
+		];
+		const { host } = memoryHost(
+			{
+				'/run/systemd/resolve/stub-resolv.conf': 'nameserver 127.0.0.53\n',
+				'/run/NetworkManager/no-stub-resolv.conf': '',
+				...Object.fromEntries(sockets.map((socket) => [socket, '']))
+			},
+			{ sockets }
+		);
+
+		expect(await resolverSockets(platform, host.fs)).toStrictEqual(expected);
+	}
+);

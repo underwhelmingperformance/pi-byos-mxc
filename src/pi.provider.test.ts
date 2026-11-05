@@ -7,7 +7,7 @@ import {
 	initialiseSandboxHost
 } from 'pi-bring-your-own-sandbox/api';
 import sandboxTools from 'pi-bring-your-own-sandbox/pi-tools';
-import { expect, it } from 'vitest';
+import { assert, expect, it } from 'vitest';
 
 import mxc from './extension.js';
 import { CommandChecks } from './fixtures/command-checks.js';
@@ -75,7 +75,7 @@ it('uses real shell consumers and releases the old allocation on session replace
 									stdout: 'target',
 									contents: 'shared',
 									capabilities: {
-										operations: ['exec'],
+										operations: ['exec', 'workspace.protection'],
 										processKinds: ['shell'],
 										shells: ['sh', 'bash'],
 										exitStatus: 'optional',
@@ -161,7 +161,7 @@ it('retains a valid default shell when the Bash probe fails', async () => {
 									defaultShell: sandbox.workspace.defaultShell
 								}).toStrictEqual({
 									capabilities: {
-										operations: ['exec'],
+										operations: ['exec', 'workspace.protection'],
 										processKinds: ['shell'],
 										shells: ['sh'],
 										exitStatus: 'optional',
@@ -264,9 +264,7 @@ it.each([
 					'scripted'
 				);
 
-				if (selected === undefined) {
-					throw new Error('The scripted model was not registered.');
-				}
+				assert.isDefined(selected);
 
 				await runtime.session.setModel(selected);
 				await runtime.session.prompt('Run the shell.');

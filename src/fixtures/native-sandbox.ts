@@ -11,13 +11,33 @@ import { expect } from 'vitest';
 import type { MxcConfig } from '../config.js';
 import mxc from '../extension.js';
 import { EFFECTIVE_POLICY } from '../policy.js';
+import { quote } from '../shell.js';
 
 import { CommandChecks } from './command-checks.js';
 import { withPiRuntime } from './pi-runtime.js';
 
+interface NativeSandboxOptions {
+	/**
+	The personal BYOS policy. Defaults to the provider's effective policy.
+	*/
+	readonly policy?: unknown;
+
+	/**
+	Prepares the workspace before Pi starts.
+	*/
+	readonly prepareWorkspace?: (workspace: string) => Promise<void>;
+
+	/**
+	Receives the acquisition instead of `check`, for tests that expect opening
+	to fail.
+	*/
+	readonly verifyOpening?: (opening: Promise<Sandbox>) => Promise<void>;
+}
+
 export async function withNativeSandbox(
 	config: Partial<MxcConfig>,
-	check: (sandbox: Sandbox, workspace: string) => Promise<void>
+	check: (sandbox: Sandbox, workspace: string) => Promise<void>,
+	options: NativeSandboxOptions = {}
 ): Promise<void> {
 	let agentDirectory = '';
 	const checks = new CommandChecks();
@@ -38,7 +58,15 @@ export async function withNativeSandbox(
 						description: 'Verify a native MXC boundary.',
 						handler: (_arguments, context) =>
 							checks.run(async () => {
-								await check(await getSandbox(pi, context), context.cwd);
+								const opening = getSandbox(pi, context);
+
+								if (options.verifyOpening !== undefined) {
+									await options.verifyOpening(opening);
+
+									return;
+								}
+
+								await check(await opening, context.cwd);
 							})
 					});
 				}
@@ -50,13 +78,14 @@ export async function withNativeSandbox(
 			expect(errors).toStrictEqual([]);
 		},
 		{
-			async prepare(_directory, personal) {
+			async prepare(directory, personal) {
 				agentDirectory = personal;
+				await options.prepareWorkspace?.(directory);
 				await writeFile(
 					path.join(personal, 'byos.json'),
 					JSON.stringify({
 						provider: 'mxc',
-						policy: EFFECTIVE_POLICY,
+						policy: options.policy ?? EFFECTIVE_POLICY,
 						providerConfig: config,
 						cleanup: { cancellationGraceMs: 10_000, disposalTimeoutMs: 15_000 }
 					})
@@ -66,10 +95,6 @@ export async function withNativeSandbox(
 	);
 }
 
-function literal(value: string): string {
-	return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
 export function nodeCommand(script: string): string {
-	return `${literal(process.execPath)} -e ${literal(script)}`;
+	return `${quote(process.execPath)} -e ${quote(script)}`;
 }

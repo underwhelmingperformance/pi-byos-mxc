@@ -1,5 +1,9 @@
 import { execFile } from 'node:child_process';
+import { constants } from 'node:fs';
+import { access } from 'node:fs/promises';
 import { promisify } from 'node:util';
+
+import { ProcessTableUnavailableError } from '../errors.js';
 
 interface ProcessIdentity {
 	readonly id: number;
@@ -9,16 +13,67 @@ interface ProcessIdentity {
 
 type SnapshotReader = (timeoutMs: number) => Promise<string>;
 
+/**
+Sends signal 0 to a process, or to a process group when `target` is negative,
+and reports whether the target exists.
+*/
+export type SignalProbe = (target: number) => 'present' | 'absent' | 'unknown';
+
+const signalProbe: SignalProbe = (target) => {
+	try {
+		process.kill(target, 0);
+
+		return 'present';
+	} catch (error) {
+		return error instanceof Error && 'code' in error && error.code === 'ESRCH'
+			? 'absent'
+			: 'unknown';
+	}
+};
+
 const execute = promisify(execFile);
+const SNAPSHOT_TIMEOUT_MS = 1000;
 
-async function readSnapshot(timeoutMs: number): Promise<string> {
-	const result = await execute('/bin/ps', ['-axo', 'pid=,pgid=,stat='], {
-		timeout: timeoutMs,
-		maxBuffer: 2_097_152,
-		env: { PATH: '/bin:/usr/bin' }
-	});
+export const PS_LOCATIONS = Object.freeze([
+	'/bin/ps',
+	'/usr/bin/ps',
+	'/run/current-system/sw/bin/ps'
+]);
 
-	return result.stdout;
+async function findExecutable(candidates: readonly string[]): Promise<string> {
+	for (const candidate of candidates) {
+		try {
+			await access(candidate, constants.X_OK);
+
+			return candidate;
+		} catch {
+			continue;
+		}
+	}
+
+	throw new ProcessTableUnavailableError(candidates);
+}
+
+export function snapshotReader(
+	candidates: readonly string[] = PS_LOCATIONS
+): SnapshotReader {
+	let executable: Promise<string> | undefined;
+
+	return async (timeoutMs) => {
+		executable ??= findExecutable(candidates);
+
+		const result = await execute(
+			await executable,
+			['-axo', 'pid=,pgid=,stat='],
+			{
+				timeout: timeoutMs,
+				maxBuffer: 2_097_152,
+				env: { PATH: '/bin:/usr/bin' }
+			}
+		);
+
+		return result.stdout;
+	};
 }
 
 function parseSnapshot(text: string): ProcessIdentity[] | undefined {
@@ -47,23 +102,26 @@ function parseSnapshot(text: string): ProcessIdentity[] | undefined {
 	return processes;
 }
 
+/**
+Checks process groups with signal 0 and falls back to a `ps` snapshot when the
+signals cannot decide. A process ID is not reused while a process group with
+that ID exists, so a target with its own existing group is that group's leader.
+*/
 export class ProcessGroups {
 	readonly #read: SnapshotReader;
+	readonly #probe: SignalProbe;
 
-	constructor(read: SnapshotReader = readSnapshot) {
+	constructor(
+		read: SnapshotReader = snapshotReader(),
+		probe: SignalProbe = signalProbe
+	) {
 		this.#read = read;
+		this.#probe = probe;
 	}
 
-	async #snapshot(deadline: number): Promise<ProcessIdentity[] | undefined> {
-		const remaining = deadline - Date.now();
-
-		if (remaining <= 0) {
-			return;
-		}
-
+	async #snapshot(): Promise<ProcessIdentity[] | undefined> {
 		try {
-			const timeoutMs = Math.max(1, Math.min(1000, remaining));
-			const snapshot = await this.#read(timeoutMs);
+			const snapshot = await this.#read(SNAPSHOT_TIMEOUT_MS);
 
 			return parseSnapshot(snapshot);
 		} catch {
@@ -71,24 +129,45 @@ export class ProcessGroups {
 		}
 	}
 
-	async isLeader(id: number, deadline: number): Promise<boolean> {
-		const snapshot = await this.#snapshot(deadline);
+	/**
+	Call this only while the target is blocked at its release gate, so that it
+	cannot have moved to another group. Resolves to `undefined` when the process
+	table cannot be read.
+	*/
+	async isLeader(id: number): Promise<boolean | undefined> {
+		const own = this.#probe(id);
+		const group = this.#probe(-id);
 
-		return (
-			snapshot?.some(
-				(process) =>
-					process.id === id && process.group === id && !process.zombie
-			) === true
+		if (own === 'absent' || group === 'absent') {
+			return false;
+		}
+
+		// A zombie target also passes, but it cannot run anything after release.
+		if (own === 'present' && group === 'present') {
+			return true;
+		}
+
+		const snapshot = await this.#snapshot();
+
+		return snapshot?.some(
+			(process) => process.id === id && process.group === id && !process.zombie
 		);
 	}
 
-	async isEmpty(group: number, deadline: number): Promise<boolean> {
-		const snapshot = await this.#snapshot(deadline);
+	/**
+	Resolves to `undefined` when the process table cannot be read.
+	*/
+	async isEmpty(group: number): Promise<boolean | undefined> {
+		if (this.#probe(-group) === 'absent') {
+			return true;
+		}
 
-		return (
-			snapshot?.every(
-				(process) => process.group !== group || process.zombie
-			) === true
+		// Zombie members answer signals, so only the snapshot can tell whether
+		// every remaining member has stopped.
+		const snapshot = await this.#snapshot();
+
+		return snapshot?.every(
+			(process) => process.group !== group || process.zombie
 		);
 	}
 }

@@ -1,21 +1,44 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
-import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { expect, it } from 'vitest';
 
+import { InvalidFixtureSettingError } from './fixtures/errors.js';
 import { nodeCommand, withNativeSandbox } from './fixtures/native-sandbox.js';
+import { nodeReadonlyPaths } from './fixtures/node-runtime.js';
 
-type Protocol = 'tcp' | 'udp' | 'dns';
+const nodePaths = await nodeReadonlyPaths();
+
+type Protocol = 'tcp' | 'udp' | 'dns' | 'dig';
+type Network = 'ip-denied' | 'open-egress';
 
 const execute = promisify(execFile);
+const protocols: readonly Protocol[] =
+	process.platform === 'darwin'
+		? ['tcp', 'udp', 'dns', 'dig']
+		: ['tcp', 'udp', 'dns'];
 const cases = (['ip-denied', 'open-egress'] as const).flatMap((network) =>
-	(['tcp', 'udp', 'dns'] as const).map((protocol) => ({ network, protocol }))
+	protocols.map((protocol) => ({ network, protocol }))
 );
 
-function script(host: string, protocol: Protocol, token: string): string {
+// Seatbelt checks receives on an unconnected UDP socket against
+// network-inbound, which MXC denies with ingress. Apple's dig sends its query
+// from such a socket, so the query reaches the peer but the reply is refused.
+function outcome(network: Network, protocol: Protocol): string {
+	if (network === 'ip-denied') {
+		return 'blocked';
+	}
+
+	return protocol === 'dig' ? 'receive-denied' : 'received';
+}
+
+function script(
+	host: string,
+	protocol: Exclude<Protocol, 'dig'>,
+	token: string
+): string {
 	const peer = JSON.stringify(host);
 	const nonce = JSON.stringify(token);
 
@@ -31,6 +54,10 @@ function script(host: string, protocol: Protocol, token: string): string {
 }
 
 function command(host: string, protocol: Protocol, token: string): string {
+	if (protocol === 'dig') {
+		return String.raw`output="$(/usr/bin/dig @${host} -p 18082 ${token}.mxc.test A +short +time=1 +tries=1 2>&1)"; case "$output" in '203.0.113.7') printf 'received\n' ;; *'communications error'*'permission denied'*) printf 'receive-denied\n' ;; *) printf 'blocked\n' ;; esac`;
+	}
+
 	if (process.platform !== 'darwin') {
 		return nodeCommand(script(host, protocol, token));
 	}
@@ -38,7 +65,7 @@ function command(host: string, protocol: Protocol, token: string): string {
 	const probes = {
 		tcp: `/usr/bin/curl --noproxy '*' -fsS --max-time 2 http://${host}:18080/probe/${token}`,
 		udp: `printf '%s' ${token} | /usr/bin/nc -u -w 1 ${host} 18081`,
-		dns: `/usr/bin/dig @${host} -p 18082 ${token}.mxc.test A +short +time=1 +tries=1`
+		dns: `/usr/bin/dig +tcp @${host} -p 18082 ${token}.mxc.test A +short +time=1 +tries=1`
 	};
 	const expected = { tcp: 'fixture', udp: token, dns: '203.0.113.7' };
 
@@ -49,7 +76,7 @@ function counts(protocol?: Protocol) {
 	return {
 		tcp: protocol === 'tcp' ? 1 : 0,
 		udp: protocol === 'udp' ? 1 : 0,
-		dns: protocol === 'dns' ? 1 : 0
+		dns: protocol === 'dns' || protocol === 'dig' ? 1 : 0
 	};
 }
 
@@ -67,15 +94,9 @@ async function observations(host: string, token: string): Promise<unknown> {
 		{ timeout: 5000, maxBuffer: 4096 }
 	);
 
-	try {
-		const observed: unknown = JSON.parse(result.stdout);
+	const observed: unknown = JSON.parse(result.stdout);
 
-		return observed;
-	} catch (error) {
-		throw new Error('The network fixture returned invalid JSON.', {
-			cause: error
-		});
-	}
+	return observed;
 }
 
 async function positive(host: string, protocol: Protocol): Promise<void> {
@@ -102,8 +123,10 @@ it.each(cases)(
 		const host = process.env.MXC_MATRIX_HOST;
 
 		if (host === undefined || isIP(host) !== 4 || host.startsWith('127.')) {
-			throw new Error(
-				'Set MXC_MATRIX_HOST to a distinct IPv4 peer with the controlled TCP/UDP/DNS fixture.'
+			throw new InvalidFixtureSettingError(
+				'MXC_MATRIX_HOST',
+				host,
+				'a distinct IPv4 peer with the controlled TCP/UDP/DNS fixture'
 			);
 		}
 
@@ -114,7 +137,7 @@ it.each(cases)(
 		await withNativeSandbox(
 			{
 				network,
-				readonlyPaths: [path.dirname(process.execPath)]
+				readonlyPaths: [...nodePaths]
 			},
 			async (sandbox) => {
 				const result = await sandbox.exec(
@@ -135,9 +158,7 @@ it.each(cases)(
 				}).toStrictEqual({
 					result: {
 						exit: { kind: 'code', code: 0 },
-						stdout: new TextEncoder().encode(
-							network === 'open-egress' ? 'received\n' : 'blocked\n'
-						),
+						stdout: new TextEncoder().encode(`${outcome(network, protocol)}\n`),
 						stderr: new Uint8Array(),
 						omittedBytes: { stdout: 0, stderr: 0 },
 						durationMs: 0

@@ -1,5 +1,7 @@
 import { expect, it } from 'vitest';
 
+import { UnsupportedBackendError } from './errors.js';
+import { thrown } from './fixtures/thrown.js';
 import { EFFECTIVE_POLICY, networkPolicy, resolveBackend } from './policy.js';
 
 it('describes delegated restrictions without claiming strict containment', () => {
@@ -29,7 +31,9 @@ it.each([
 ] as const)(
 	'rejects $selection on $platform without fallback',
 	({ platform, selection }) => {
-		expect(() => resolveBackend(platform, selection)).toThrow();
+		expect(thrown(() => resolveBackend(platform, selection))).toStrictEqual(
+			new UnsupportedBackendError(platform, selection)
+		);
 	}
 );
 

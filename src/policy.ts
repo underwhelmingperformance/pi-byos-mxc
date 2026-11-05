@@ -2,7 +2,7 @@ import type { NetworkPolicy } from '@microsoft/mxc-sdk/v1';
 import type { SandboxPolicy } from 'pi-bring-your-own-sandbox/api';
 
 import type { MxcConfig } from './config.js';
-import { MxcConfigError } from './config.js';
+import { UnsupportedBackendError } from './errors.js';
 
 type NativeBackend = Exclude<MxcConfig['backend'], 'auto'>;
 
@@ -24,9 +24,7 @@ export function resolveBackend(
 		return 'bubblewrap';
 	}
 
-	throw new MxcConfigError(
-		'MXC requires Seatbelt on macOS or Bubblewrap on Linux. Select a backend matching the host.'
-	);
+	throw new UnsupportedBackendError(platform, selection);
 }
 
 export function networkPolicy(mode: MxcConfig['network']): NetworkPolicy {

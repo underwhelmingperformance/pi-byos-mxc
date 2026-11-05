@@ -5,11 +5,16 @@ import { pipeline } from 'node:stream/promises';
 import type { MxcProcess } from '@microsoft/mxc-sdk/v1';
 import { spawn } from '@microsoft/mxc-sdk/v1';
 
+import {
+	ControlChannelClosedError,
+	MissingStandardStreamsError,
+	StopNotAcknowledgedError
+} from '../errors.js';
 import { networkPolicy } from '../policy.js';
-import { transportCommand } from '../shell.js';
+import { SYSTEM_PATH, transportCommand } from '../shell.js';
 
+import { isParentMessage } from './parent-message.js';
 import type { ChildMessage, StartMessage } from './protocol.js';
-import { parentMessage } from './protocol.js';
 
 class MxcSupervisor {
 	#job: StartMessage | undefined;
@@ -22,7 +27,7 @@ class MxcSupervisor {
 	#send(message: ChildMessage): Promise<void> {
 		return new Promise((resolve, reject) => {
 			if (!process.connected || process.send === undefined) {
-				reject(new Error('The MXC supervisor control channel is closed.'));
+				reject(new ControlChannelClosedError());
 
 				return;
 			}
@@ -51,9 +56,6 @@ class MxcSupervisor {
 
 	async #execute(request: StartMessage): Promise<void> {
 		try {
-			const remaining = request.deadline - Date.now();
-			const timeoutMs = Math.max(1, Math.min(4_294_967_295, remaining));
-
 			this.#target = await spawn(
 				{
 					containment: { type: request.backend },
@@ -65,13 +67,13 @@ class MxcSupervisor {
 					}),
 					workingDirectory: request.cwd,
 					filesystem: {
-						readwritePaths: [request.workspace, request.scratch],
-						readonlyPaths: request.readonlyPaths
+						readwritePaths: request.readwritePaths,
+						readonlyPaths: request.readonlyPaths,
+						deniedPaths: request.deniedPaths
 					},
 					network: networkPolicy(request.network),
-					environment: { PATH: '/bin:/usr/bin:/usr/sbin:/sbin' },
+					environment: { PATH: SYSTEM_PATH },
 					inheritDefaultEnvironment: false,
-					timeoutMs,
 					ui: { disable: true }
 				},
 				{ telemetry: { enabled: false } }
@@ -82,7 +84,7 @@ class MxcSupervisor {
 			const stdin = this.#target.standardInput;
 
 			if (!stdout || !stderr || !stdin) {
-				throw new Error('MXC did not expose the required standard streams.');
+				throw new MissingStandardStreamsError();
 			}
 
 			this.#input = stdin;
@@ -111,14 +113,14 @@ class MxcSupervisor {
 			await output;
 
 			if (this.#hasStopFailure) {
-				throw new Error('MXC could not acknowledge the stop request.');
+				throw new StopNotAcknowledgedError();
 			}
 
 			await this.#send({
 				version: 1,
 				kind: 'completed',
 				id: request.id,
-				...result,
+				exitCode: result.exitCode,
 				warnings: Math.min(64, this.#target.warnings.length)
 			});
 		} catch {
@@ -138,9 +140,20 @@ class MxcSupervisor {
 		}
 	}
 
+	#abandon(): void {
+		this.#stop();
+
+		if (!(this.#job === undefined && process.connected)) {
+			return;
+		}
+
+		process.exitCode = 1;
+		process.disconnect();
+	}
+
 	#receive(message: unknown): void {
-		if (!parentMessage.Check(message)) {
-			this.#stop();
+		if (!isParentMessage(message)) {
+			this.#abandon();
 
 			return;
 		}
@@ -159,7 +172,7 @@ class MxcSupervisor {
 		}
 
 		if (message.id !== this.#job?.id) {
-			this.#stop();
+			this.#abandon();
 
 			return;
 		}

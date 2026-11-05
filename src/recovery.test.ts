@@ -1,38 +1,29 @@
-import { existsSync } from 'node:fs';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-
 import type {
 	RecoveryDescriptor,
 	SandboxOpenContext
 } from 'pi-bring-your-own-sandbox/api';
-import { afterEach, expect, it } from 'vitest';
+import {
+	SandboxCleanupError,
+	SandboxStartupError
+} from 'pi-bring-your-own-sandbox/api';
+import { expect, it } from 'vitest';
 
+import { AllocationCancelledError } from './errors.js';
+import { cleanupControl } from './fixtures/cleanup.js';
+import { memoryHost } from './fixtures/host.js';
 import { RecoveryStore } from './recovery.js';
 
-const cleanup: string[] = [];
+const root = '/tmp/pi-byos-mxc-00000000-0000-4000-8000-000000000001';
 
-afterEach(async () => {
-	for (const directory of cleanup.splice(0)) {
-		await rm(directory, { recursive: true, force: true });
-	}
-});
-
-async function fixture() {
-	const workspace = await mkdtemp(
-		path.join(tmpdir(), 'pi-byos-mxc-workspace-')
-	);
-
-	cleanup.push(workspace);
-
-	let reported: RecoveryDescriptor | undefined;
-	let existedAtReport: boolean | undefined;
+function fixture(signal = new AbortController().signal) {
+	const { host, memory } = memoryHost({ '/workspace': {} });
+	const reports: { descriptor: RecoveryDescriptor; existed: boolean }[] = [];
 	const context: SandboxOpenContext = {
 		operationId: 'open',
-		signal: new AbortController().signal,
-		deadline: Date.now() + 10_000,
-		cleanup: { deadline: undefined },
+		signal,
+		deadline: 10_000,
+		remainingMs: () => 10_000,
+		cleanup: cleanupControl().cleanup,
 		reportDiagnostic() {
 			return;
 		},
@@ -40,55 +31,105 @@ async function fixture() {
 			return;
 		},
 		reportRecovery(descriptor) {
-			reported = descriptor;
-			existedAtReport =
-				descriptor.kind === 'allocation' &&
-				existsSync(path.join(tmpdir(), `pi-byos-mxc-${descriptor.id}`));
+			reports.push({ descriptor, existed: memory.existsSync(root) });
 		}
 	};
-	const store = await RecoveryStore.open(workspace, context);
 
-	cleanup.push(store.root);
-
-	return { store, reported, existedAtReport };
+	return {
+		memory,
+		reports,
+		open: () => RecoveryStore.open('/workspace', context, host)
+	};
 }
 
-it('reports aggregate recovery before use and removes confirmed allocations', async () => {
-	const { store, reported, existedAtReport } = await fixture();
-	const instructions: unknown = expect.stringContaining(store.root);
+function records(memory: ReturnType<typeof memoryHost>['memory']) {
+	return Object.fromEntries(
+		memory
+			.readdirSync(root)
+			.map(String)
+			.filter((name) => name.endsWith('.json'))
+			.map((name) => [
+				name,
+				JSON.parse(String(memory.readFileSync(`${root}/${name}`, 'utf8')))
+			])
+	);
+}
 
-	expect({ reported, existedAtReport }).toStrictEqual({
-		reported: {
-			kind: 'allocation',
-			id: path.basename(store.root).slice('pi-byos-mxc-'.length),
-			lease:
-				'No automatic expiry. Manual recovery is required after an unconfirmed cleanup or hard host crash.',
-			instructions
-		},
-		existedAtReport: false
-	});
+it('reports aggregate recovery before allocation and removes confirmed jobs', async () => {
+	const { memory, reports, open } = fixture();
+	const store = await open();
+	const instructions: unknown = expect.stringContaining(root);
+
 	await store.begin('job');
 	await store.record({ id: 'job', supervisorPid: 42, targetPid: 43 });
 	await store.confirmReleased('job');
 	await store.dispose();
-	await expect(access(store.root)).rejects.toMatchObject({ code: 'ENOENT' });
+
+	expect({
+		reports,
+		scratch: store.scratch,
+		exists: memory.existsSync(root)
+	}).toStrictEqual({
+		reports: [
+			{
+				descriptor: {
+					kind: 'allocation',
+					id: '00000000-0000-4000-8000-000000000001',
+					lease:
+						'No automatic expiry. Manual recovery is required after an unconfirmed cleanup or hard host crash.',
+					instructions
+				},
+				existed: false
+			}
+		],
+		scratch: `${root}/scratch`,
+		exists: false
+	});
 });
 
 it('retains uncertain job identities without storing execution payloads', async () => {
-	const { store } = await fixture();
+	const { memory, open } = fixture();
+	const store = await open();
 
 	await store.begin('job');
 	await store.record({ id: 'job', supervisorPid: 42, targetPid: 43 });
-	await expect(store.dispose()).rejects.toMatchObject({
-		name: 'SandboxCleanupError'
-	});
 
-	const saved = await readFile(path.join(store.root, 'job.json'), 'utf8');
-	const record: unknown = JSON.parse(saved);
-
-	expect(record).toStrictEqual({
-		id: 'job',
-		supervisorPid: 42,
-		targetPid: 43
+	await expect(store.dispose()).rejects.toStrictEqual(
+		new SandboxCleanupError({
+			operation: 'dispose',
+			providerId: 'mxc',
+			recovery: store.recovery
+		})
+	);
+	expect(records(memory)).toStrictEqual({
+		'job.json': { id: 'job', supervisorPid: 42, targetPid: 43 }
 	});
+});
+
+it('replaces a temporary record left by an interrupted update', async () => {
+	const { memory, open } = fixture();
+	const store = await open();
+
+	await store.begin('job');
+	memory.writeFileSync(`${root}/job.json.tmp`, '{"id":');
+	await store.record({ id: 'job', supervisorPid: 42 });
+
+	expect(records(memory)).toStrictEqual({
+		'job.json': { id: 'job', supervisorPid: 42 }
+	});
+});
+
+it('does not allocate after opening is cancelled', async () => {
+	const controller = new AbortController();
+	const { memory, open } = fixture(controller.signal);
+
+	controller.abort();
+
+	await expect(open()).rejects.toStrictEqual(
+		new SandboxStartupError(
+			{ operation: 'open', providerId: 'mxc' },
+			{ cause: new AllocationCancelledError() }
+		)
+	);
+	expect(memory.existsSync(root)).toBe(false);
 });

@@ -6,6 +6,8 @@ import type {
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
 import type { InlineExtension } from '@earendil-works/pi-coding-agent';
 
+import { ScriptedModelExhaustedError } from './errors.js';
+
 export class ScriptedModel {
 	readonly requests: TranscriptContext[] = [];
 	readonly extension: InlineExtension;
@@ -38,9 +40,7 @@ export class ScriptedModel {
 						this.requests.push(structuredClone(context));
 
 						if (this.requests.length > 2) {
-							throw new Error(
-								'Pi requested more turns than the scripted model provides.'
-							);
+							throw new ScriptedModelExhaustedError(this.requests.length);
 						}
 
 						const isFirst = this.requests.length === 1 && calls.length > 0;

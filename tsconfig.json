@@ -16,13 +16,9 @@
 		"forceConsistentCasingInFileNames": true,
 		"isolatedModules": true,
 		"verbatimModuleSyntax": true,
+		"rewriteRelativeImportExtensions": true,
 		"skipLibCheck": true,
 		"noEmit": true
 	},
-	"include": [
-		"src/**/*.ts",
-		"script/**/*.ts",
-		"examples/**/*.ts",
-		"*.config.ts"
-	]
+	"include": ["src/**/*.ts", "script/**/*.ts", "*.config.ts"]
 }

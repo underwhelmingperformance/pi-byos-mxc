@@ -33,6 +33,7 @@ All endpoints use the supplied bind address:
 | 18080 | HTTP         | `GET /seen/TOKEN` returns the TCP, UDP and DNS request counts       |
 | 18081 | UDP          | Echoes the token and records a UDP probe                            |
 | 18082 | DNS over UDP | Answers `TOKEN.mxc.test A` with `203.0.113.7` and records the query |
+| 18082 | DNS over TCP | Gives the same answer with a length prefix and records the query    |
 
 Tokens are 32 lowercase hexadecimal characters. Observation responses include
 exactly `tcp`, `udp` and `dns` counts. Counter updates are synchronous on the
@@ -57,20 +58,18 @@ return 200 without URL credentials. Missing configuration fails the gate.
 
 On macOS, probes use Apple system curl, nc and dig. Host Node and the
 Nix-provided curl could not reach the local VM addresses in the observed setup,
-so their failures cannot establish sandbox isolation.
+so their failures cannot establish sandbox isolation. The DNS case uses
+`dig +tcp`. A peer that listens on an address of the execution host cannot
+replace a separate machine, because Seatbelt's host-loopback denial also covers
+the host's own interface addresses.
 
-The current macOS result is seven passing tests and one failing open-egress DNS
-test. The peer receives the DNS query, but sandboxed dig reports
-`;; communications error: permission denied`. Keep that failure visible. A
-controlled public-SDK comparison makes dig succeed when ingress is allowed and
-fail when only that field changes to denied. A connected UDP DNS probe receives
-the complete expected answer while ingress and host loopback remain denied. The
-existing dig-based gate is still failing; changing its acceptance criteria
-requires an explicit decision about the dig socket-pattern limitation. The
-[source-backed diagnosis and working TCP alternative][macos-dns] explain the
-remaining compatibility restriction. Both Linux network matrices pass all eight
-cases, and direct Linux dig probes succeed under open egress with ingress still
-denied. Ingress, expanded loopback, IPv6 and complete platform acceptance remain
-incomplete.
+The macOS gate has an additional `dig` case over UDP. Under open egress it
+expects the query to reach the peer and the reply to be refused with
+`;; communications error: permission denied`, which is the documented Seatbelt
+behaviour for receives on an unconnected UDP socket. A change in that behaviour
+fails the gate. The [source-backed diagnosis][macos-dns] explains the
+restriction. On Linux, all probes use Node, and direct dig probes succeed under
+open egress with ingress still denied. Ingress, expanded loopback, IPv6 and
+complete platform acceptance remain incomplete.
 
 [macos-dns]: macos-dns.md

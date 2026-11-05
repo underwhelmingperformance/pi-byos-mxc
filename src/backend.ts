@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import type {
@@ -8,6 +7,7 @@ import type {
 	RecoveryDescriptor,
 	SandboxBackend,
 	SandboxCapabilities,
+	SandboxCleanupContext,
 	SandboxOpenContext,
 	SandboxOpenRequest,
 	SandboxOperationContext,
@@ -19,6 +19,8 @@ import {
 	InvalidSandboxRequestError,
 	isSandboxError,
 	SandboxCleanupError,
+	SandboxPathNotFoundError,
+	SandboxPermissionDeniedError,
 	SandboxSessionClosingError,
 	SandboxStartupError,
 	UnsupportedSandboxCapabilityError,
@@ -26,24 +28,33 @@ import {
 } from 'pi-bring-your-own-sandbox/api';
 
 import type { MxcConfig } from './config.js';
+import { MxcConfigError, UnenforceablePolicyError } from './errors.js';
+import type { Host, HostFileSystem } from './host.js';
+import { systemHost } from './host.js';
 import { assertDisjointPaths } from './paths.js';
+import { resolverSockets } from './platform/system-paths.js';
 import { EFFECTIVE_POLICY } from './policy.js';
+import { protectedPaths } from './protection.js';
 import { RecoveryStore } from './recovery.js';
 import type { MxcRuntime } from './runtime.js';
 import { prepareRuntime } from './runtime.js';
-import { targetEnvironment } from './shell.js';
+import { assertSystemGrants, SYSTEM_ROOTS } from './scope.js';
+import { SYSTEM_PATH, targetEnvironment } from './shell.js';
 import type { JobOptions } from './supervisor/client.js';
 import { SupervisorJob } from './supervisor/client.js';
 import type { StartMessage } from './supervisor/protocol.js';
+import { MAX_START_BYTES } from './supervisor/protocol.js';
 
 type JobRunner = Pick<SupervisorJob, 'run' | 'limitCleanup'>;
 
 interface BackendDependencies {
+	readonly host: Host;
 	readonly prepareRuntime: typeof prepareRuntime;
 	readonly createJob: (options: JobOptions) => JobRunner;
 }
 
 const DEFAULT_DEPENDENCIES: BackendDependencies = Object.freeze({
+	host: systemHost,
 	prepareRuntime,
 	createJob: (options: JobOptions) => new SupervisorJob(options)
 });
@@ -52,7 +63,7 @@ function capabilities(
 	shells: ReadonlyMap<ShellDialect, string>
 ): SandboxCapabilities {
 	return Object.freeze({
-		operations: Object.freeze(['exec'] as const),
+		operations: Object.freeze(['exec', 'workspace.protection'] as const),
 		processKinds: Object.freeze(['shell'] as const),
 		shells: Object.freeze(shells.keys().toArray()),
 		exitStatus: 'optional',
@@ -60,20 +71,86 @@ function capabilities(
 	});
 }
 
+function describePolicy(
+	runtime: MxcRuntime & { readonly protectedEntries: readonly string[] },
+	policy: SandboxPolicy,
+	network: MxcConfig['network'],
+	platform: NodeJS.Platform
+): string {
+	const isSeatbelt = runtime.backend === 'seatbelt';
+	const socketScope = [
+		'in the writable workspace',
+		...(isSeatbelt ? [] : ['in read-only grants']),
+		...(isSeatbelt && network === 'open-egress' ? ['anywhere on the host'] : [])
+	].join(' and ');
+	const filesystem =
+		policy.filesystemScope === 'system-read-only'
+			? `Read-only host access is limited to system and runtime directories: MXC's baseline plus configured grants inside ${(SYSTEM_ROOTS[platform] ?? []).join(', ')}.${isSeatbelt ? ' File metadata, such as existence and size, remains visible for other host paths.' : ''}`
+			: 'Baseline host system reads plus configured read-only grants.';
+
+	return [
+		`MXC ${runtime.backend}; ${policy.workspaceAccess === 'read-write' ? 'writable' : 'read-only'} shared workspace and private writable scratch.`,
+		filesystem,
+		...(runtime.protectedEntries.length > 0
+			? [
+					`Read-only protected workspace entries: ${runtime.protectedEntries.join(', ')}.`
+				]
+			: []),
+		`${network} external IP mode, with ingress and host-loopback IP denied.`,
+		`Commands can connect to host services through UNIX sockets ${socketScope}; those services can make network connections on the command's behalf.`,
+		'No general resource quotas.',
+		'Termination covers only the direct process and original supervised POSIX group. Descendants in other groups or sessions may keep modifying permitted files after completion, cancellation, timeout or disposal, even when their parent waited.',
+		'Detached submission is not supported.'
+	].join(' ');
+}
+
+async function workingDirectory(
+	fs: HostFileSystem,
+	filename: string
+): Promise<string> {
+	const identity = { operation: 'exec', providerId: 'mxc' } as const;
+
+	try {
+		const metadata = await fs.stat(filename);
+
+		if (metadata.isDirectory()) {
+			return filename;
+		}
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			'code' in error &&
+			(error.code === 'EACCES' || error.code === 'EPERM')
+		) {
+			throw new SandboxPermissionDeniedError(identity, { cause: error });
+		}
+
+		if (!(
+			error instanceof Error &&
+			'code' in error &&
+			(error.code === 'ENOENT' || error.code === 'ENOTDIR')
+		)) {
+			throw error;
+		}
+	}
+
+	throw new SandboxPathNotFoundError(identity);
+}
+
 export class MxcBackend implements SandboxBackend {
 	static async open(
 		request: SandboxOpenRequest<MxcConfig>,
 		context: SandboxOpenContext,
-		dependencies: BackendDependencies = DEFAULT_DEPENDENCIES
+		overrides: Partial<BackendDependencies> = {}
 	): Promise<SandboxBackend> {
+		const dependencies = { ...DEFAULT_DEPENDENCIES, ...overrides };
 		let store: RecoveryStore | undefined;
 
 		context.reportRecovery({ kind: 'none' });
 
 		try {
 			if (
-				request.policy.workspaceAccess !== 'read-write' ||
-				request.policy.filesystemScope !== 'provider-default' ||
+				request.policy.filesystemScope === 'workspace-only' ||
 				request.policy.networkAccess !== 'provider-default'
 			) {
 				throw new UnsupportedSandboxPolicyError({
@@ -88,14 +165,32 @@ export class MxcBackend implements SandboxBackend {
 				context
 			);
 
-			store = await RecoveryStore.open(runtime.workspace, context);
+			if (request.policy.filesystemScope === 'system-read-only') {
+				assertSystemGrants(
+					dependencies.host.environment.platform,
+					runtime.configuredPaths
+				);
+			}
+
+			const protectedEntries = await protectedPaths(dependencies.host, {
+				workspace: runtime.workspace,
+				backend: runtime.backend,
+				workspaceAccess: request.policy.workspaceAccess,
+				resources: request.policy.workspaceProtection ?? []
+			});
+
+			store = await RecoveryStore.open(
+				runtime.workspace,
+				context,
+				dependencies.host
+			);
 			assertDisjointPaths(store.scratch, runtime.readonlyPaths);
 
 			const backend = new MxcBackend(
 				request,
-				runtime,
+				{ ...runtime, protectedEntries },
 				store,
-				dependencies.createJob
+				dependencies
 			);
 			const probeContext: BackendProcessContext = {
 				...context,
@@ -141,7 +236,7 @@ export class MxcBackend implements SandboxBackend {
 				}
 			}
 
-			if (context.signal.aborted || context.deadline <= Date.now()) {
+			if (context.signal.aborted) {
 				throw new SandboxStartupError({ operation: 'open', providerId: 'mxc' });
 			}
 
@@ -173,10 +268,25 @@ export class MxcBackend implements SandboxBackend {
 				throw error;
 			}
 
+			if (error instanceof UnenforceablePolicyError) {
+				context.reportDiagnostic({
+					level: 'warning',
+					message: error.message.slice(0, 2048)
+				});
+				context.confirmCleanup();
+
+				throw new UnsupportedSandboxPolicyError(
+					{ operation: 'open', providerId: 'mxc' },
+					{ cause: error }
+				);
+			}
+
 			context.reportDiagnostic({
 				level: 'warning',
 				message:
-					'MXC opening failed. Check runtime availability, shell/toolchain grants and that the provider is installed outside the writable workspace.'
+					error instanceof MxcConfigError
+						? error.message.slice(0, 2048)
+						: 'MXC opening failed. Check runtime availability, shell/toolchain grants and that the provider is installed outside the writable workspace.'
 			});
 
 			context.confirmCleanup();
@@ -188,48 +298,78 @@ export class MxcBackend implements SandboxBackend {
 		}
 	}
 
+	readonly #host: Host;
 	readonly #createJob: BackendDependencies['createJob'];
 	readonly #runtime: MxcRuntime;
 	readonly #configuration: MxcConfig;
 	readonly #store: RecoveryStore;
+	readonly #grants: Pick<StartMessage, 'readwritePaths' | 'readonlyPaths'>;
 	readonly #shells: Map<ShellDialect, string>;
 	readonly #lifetime = new AbortController();
 	readonly #jobs = new Set<Promise<BackendProcessOutcome>>();
 	readonly #runners = new Set<JobRunner>();
 	#capabilities: SandboxCapabilities;
 	#isClosing = false;
-	#disposalDeadline: number | undefined;
+	#disposalCleanup: SandboxCleanupContext | undefined;
 	#disposal: Promise<void> | undefined;
 	readonly id: string;
 	readonly workspace: SandboxWorkspace;
-	readonly policy: SandboxPolicy = EFFECTIVE_POLICY;
+	readonly policy: SandboxPolicy;
 	readonly policyDescription: string;
 	readonly recovery: RecoveryDescriptor;
 
 	private constructor(
 		request: SandboxOpenRequest<MxcConfig>,
-		runtime: MxcRuntime,
+		runtime: MxcRuntime & { readonly protectedEntries: readonly string[] },
 		store: RecoveryStore,
-		createJob: BackendDependencies['createJob']
+		dependencies: BackendDependencies
 	) {
-		this.#createJob = createJob;
+		this.#host = dependencies.host;
+		this.#createJob = dependencies.createJob;
 		this.#runtime = runtime;
 		this.#configuration = request.configuration;
 		this.#store = store;
 		this.#shells = new Map(runtime.shells);
 		this.#capabilities = capabilities(this.#shells);
-		this.id = `mxc:${request.generationId}`;
+
+		const protection = request.policy.workspaceProtection;
+
+		this.policy = Object.freeze({
+			...EFFECTIVE_POLICY,
+			workspaceAccess: request.policy.workspaceAccess,
+			filesystemScope: request.policy.filesystemScope,
+			...(protection !== undefined && { workspaceProtection: protection })
+		});
+		this.id = `mxc:${request.generationId}:${store.id}`;
+
+		const isWritable = this.policy.workspaceAccess === 'read-write';
+
 		this.workspace = Object.freeze({
 			root: runtime.workspace,
 			pathFlavor: 'posix',
 			relationship: 'shared',
 			home: store.scratch,
 			defaultShell: 'sh',
-			description:
-				'Shared host workspace; changes persist. Private home/scratch lasts until generation disposal.'
+			description: isWritable
+				? 'Shared host workspace; changes persist. Private home/scratch lasts until generation disposal.'
+				: 'Shared host workspace, read-only inside the sandbox; host changes are visible. Private writable home/scratch lasts until generation disposal.'
 		});
 		this.recovery = store.recovery;
-		this.policyDescription = `MXC ${runtime.backend}; writable shared workspace and private scratch; baseline host system reads plus explicit read-only toolchains; ${request.configuration.network} external IP mode, with ingress and host-loopback IP denied. Accessible UNIX sockets may contact host services. No general resource quotas. Termination covers only the direct process and original supervised POSIX group. Descendants in other groups or sessions may keep modifying permitted files after completion, cancellation, timeout or disposal, even when their parent waited. Detached submission is not supported.`;
+		this.#grants = isWritable
+			? {
+					readwritePaths: [runtime.workspace, store.scratch],
+					readonlyPaths: [...runtime.protectedEntries, ...runtime.readonlyPaths]
+				}
+			: {
+					readwritePaths: [store.scratch],
+					readonlyPaths: [runtime.workspace, ...runtime.readonlyPaths]
+				};
+		this.policyDescription = describePolicy(
+			runtime,
+			this.policy,
+			request.configuration.network,
+			dependencies.host.environment.platform
+		);
 	}
 
 	async #execute(
@@ -237,19 +377,13 @@ export class MxcBackend implements SandboxBackend {
 		context: BackendProcessContext,
 		shell: string
 	): Promise<BackendProcessOutcome> {
-		const id = randomUUID();
+		const cwd = await workingDirectory(
+			this.#host.fs,
+			path.resolve(this.workspace.root, request.cwd ?? '.')
+		);
+		const id = this.#host.randomId();
 		const signal = AbortSignal.any([context.signal, this.#lifetime.signal]);
-		let cleanupDeadline: number | undefined;
-		const publishCleanup = () => {
-			cleanupDeadline ??=
-				context.cleanup.deadline ?? this.#disposalDeadline ?? context.deadline;
-		};
-
-		signal.addEventListener('abort', publishCleanup, { once: true });
-
-		if (signal.aborted) {
-			publishCleanup();
-		}
+		const disposal = () => this.#disposalCleanup;
 
 		const invocation: StartMessage = {
 			version: 1,
@@ -259,53 +393,51 @@ export class MxcBackend implements SandboxBackend {
 			network: this.#configuration.network,
 			command: request.command,
 			shell,
-			cwd: path.resolve(this.workspace.root, request.cwd ?? '.'),
-			workspace: this.workspace.root,
-			scratch: this.#store.scratch,
+			cwd,
+			readwritePaths: [...this.#grants.readwritePaths],
 			environment: targetEnvironment(
 				{
-					PATH: '/bin:/usr/bin:/usr/sbin:/sbin',
+					PATH: SYSTEM_PATH,
 					HOME: this.#store.scratch,
 					TMPDIR: this.#store.scratch,
 					...this.#configuration.environment
 				},
 				request.env
 			),
-			readonlyPaths: [...this.#runtime.readonlyPaths],
-			deadline: context.deadline
+			readonlyPaths: [...this.#grants.readonlyPaths],
+			deniedPaths: await resolverSockets(
+				this.#host.environment.platform,
+				this.#host.fs
+			)
 		};
 
-		if (Buffer.byteLength(JSON.stringify(invocation)) > 1_048_576) {
-			signal.removeEventListener('abort', publishCleanup);
-
+		if (Buffer.byteLength(JSON.stringify(invocation)) > MAX_START_BYTES) {
 			throw new InvalidSandboxRequestError({
 				operation: 'exec',
 				providerId: 'mxc'
 			});
 		}
 
-		try {
-			await this.#store.begin(id);
+		await this.#store.begin(id);
 
-			const job = this.#createJob({
-				entry: this.#runtime.entry,
-				request: invocation,
-				context: {
-					...context,
-					signal,
-					cleanup: {
-						get deadline() {
-							return cleanupDeadline;
-						}
+		const job = this.#createJob({
+			entry: this.#runtime.entry,
+			request: invocation,
+			context: {
+				...context,
+				signal,
+				cleanup: {
+					remainingMs: () =>
+						context.cleanup.remainingMs() ?? disposal()?.remainingMs(),
+					get deadline() {
+						return context.cleanup.deadline ?? disposal()?.deadline;
 					}
-				},
-				record: (allocation) => this.#store.record(allocation)
-			});
+				}
+			},
+			record: (allocation) => this.#store.record(allocation)
+		});
 
-			return await this.#runJob(id, job);
-		} finally {
-			signal.removeEventListener('abort', publishCleanup);
-		}
+		return this.#runJob(id, job);
 	}
 
 	async #runJob(id: string, job: JobRunner): Promise<BackendProcessOutcome> {
@@ -317,10 +449,12 @@ export class MxcBackend implements SandboxBackend {
 			try {
 				outcome = await job.run();
 			} catch (error) {
+				// Job errors without a completion field happen before the supervisor
+				// receives the request, so no target exists.
 				if (
 					isSandboxError(error) &&
-					'completion' in error &&
-					(error.completion === 'confirmed' ||
+					(!('completion' in error) ||
+						error.completion === 'confirmed' ||
 						error.completion === 'not-started')
 				) {
 					try {
@@ -350,22 +484,14 @@ export class MxcBackend implements SandboxBackend {
 		pending: PromiseWithResolvers<undefined>
 	): Promise<void> {
 		try {
-			const deadline = context.cleanup.deadline ?? context.deadline;
+			const remainingMs =
+				context.cleanup.remainingMs() ?? context.remainingMs();
 
 			for (const job of this.#runners) {
-				job.limitCleanup(deadline);
+				job.limitCleanup(remainingMs);
 			}
 
 			await Promise.allSettled(this.#jobs);
-
-			if (context.signal.aborted || context.deadline <= Date.now()) {
-				throw new SandboxCleanupError({
-					operation: 'dispose',
-					providerId: 'mxc',
-					recovery: this.recovery
-				});
-			}
-
 			await this.#store.dispose();
 			pending.resolve(undefined);
 		} catch (error) {
@@ -426,7 +552,7 @@ export class MxcBackend implements SandboxBackend {
 		this.#isClosing = true;
 
 		try {
-			this.#disposalDeadline = context.cleanup.deadline ?? context.deadline;
+			this.#disposalCleanup = context.cleanup;
 			this.#lifetime.abort('shutdown');
 			void this.#dispose(context, pending);
 		} catch (error) {

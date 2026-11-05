@@ -1,39 +1,69 @@
 import { randomUUID } from 'node:crypto';
 import { setImmediate as yieldImmediate } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
 
-import type { BackendProcessContext } from 'pi-bring-your-own-sandbox/api';
-import { expect, it, vi } from 'vitest';
+import type {
+	BackendProcessContext,
+	SandboxDiagnostic
+} from 'pi-bring-your-own-sandbox/api';
+import {
+	InvalidSandboxRequestError,
+	SandboxOperationError,
+	SandboxTransportError
+} from 'pi-bring-your-own-sandbox/api';
+import { expect, it } from 'vitest';
 
+import { ProcessTableUnavailableError } from '../errors.js';
+import { FakeClock } from '../fixtures/clock.js';
+import { InjectedFailure } from '../fixtures/errors.js';
+import { fakeSupervisor } from '../fixtures/supervisor-process.js';
 import { ProcessGroups } from '../platform/process-groups.js';
 
+import type { JobOptions } from './client.js';
 import { SupervisorJob } from './client.js';
+
+const transportFailure = new SandboxTransportError({
+	operation: 'exec',
+	providerId: 'mxc'
+});
 
 function fixture(
 	command: string,
-	recordGate: Promise<void> = Promise.resolve()
+	recordGate: Promise<void> = Promise.resolve(),
+	spawnSupervisor: JobOptions['spawn'] = fakeSupervisor()
 ) {
+	const clock = new FakeClock();
 	const controller = new AbortController();
 	const output = { stdout: '', stderr: '' };
 	const allocated = Promise.withResolvers<undefined>();
 	const faulted = Promise.withResolvers<undefined>();
 	const leadershipChecks: number[] = [];
-	let cleanupDeadline: number | undefined;
+	const diagnostics: SandboxDiagnostic[] = [];
+	let cleanupExpiresAt: number | undefined;
+	const startCleanup = (graceMs: number) => {
+		cleanupExpiresAt = clock.monotonicTime() + graceMs;
+		controller.abort();
+	};
+
 	const context: BackendProcessContext = {
 		operationId: randomUUID(),
 		signal: controller.signal,
-		deadline: Date.now() + 5000,
+		deadline: 5000,
+		remainingMs: () => Math.max(0, 5000 - clock.monotonicTime()),
 		cleanup: {
+			remainingMs: () =>
+				cleanupExpiresAt === undefined
+					? undefined
+					: Math.max(0, cleanupExpiresAt - clock.monotonicTime()),
 			get deadline() {
-				return cleanupDeadline;
+				return cleanupExpiresAt;
 			}
 		},
-		reportDiagnostic() {
-			return;
+		reportDiagnostic(diagnostic) {
+			diagnostics.push(diagnostic);
 		},
 		onOutput(chunk) {
 			if (command === 'output-failure') {
-				throw new Error('The output observer failed.');
+				throw new InjectedFailure('output');
 			}
 
 			output[chunk.stream] += Buffer.from(chunk.data).toString();
@@ -42,26 +72,26 @@ function fixture(
 				return;
 			}
 
-			cleanupDeadline = Date.now() + 1000;
-			controller.abort();
+			startCleanup(1000);
 		}
 	};
-	const groups = new ProcessGroups(() =>
-		command === 'observer-failure'
-			? Promise.reject(new Error('The process snapshot is unavailable.'))
-			: Promise.resolve(command === 'live-group' ? '42 42 S\n' : '42 42 Z\n')
+	const groups = new ProcessGroups(
+		() =>
+			command === 'observer-failure'
+				? Promise.reject(new ProcessTableUnavailableError(['/bin/ps']))
+				: Promise.resolve(command === 'live-group' ? '42 42 S\n' : '42 42 Z\n'),
+		() => 'unknown'
 	);
 
 	return {
-		controller,
+		clock,
 		output,
 		allocated,
 		faulted,
 		leadershipChecks,
+		diagnostics,
 		job: new SupervisorJob({
-			entry: fileURLToPath(
-				new URL('../fixtures/supervisor.ts', import.meta.url)
-			),
+			entry: '/fixture/supervisor.js',
 			request: {
 				version: 1,
 				kind: 'start',
@@ -71,13 +101,14 @@ function fixture(
 				command,
 				shell: '/bin/sh',
 				cwd: '/workspace',
-				workspace: '/workspace',
-				scratch: '/scratch',
+				readwritePaths: ['/workspace', '/scratch'],
 				environment: {},
 				readonlyPaths: [],
-				deadline: context.deadline
+				deniedPaths: []
 			},
 			context,
+			clock,
+			spawn: spawnSupervisor,
 			groups: {
 				isLeader(pid) {
 					leadershipChecks.push(pid);
@@ -90,7 +121,7 @@ function fixture(
 
 					return Promise.resolve(true);
 				},
-				isEmpty: (group, deadline) => groups.isEmpty(group, deadline)
+				isEmpty: (group) => groups.isEmpty(group)
 			},
 			record(allocation) {
 				if (allocation.targetPid !== undefined) {
@@ -101,7 +132,7 @@ function fixture(
 					command === 'record-failure' &&
 					allocation.targetPid !== undefined
 				) {
-					return Promise.reject(new Error('The recovery record failed.'));
+					return Promise.reject(new InjectedFailure('record'));
 				}
 
 				return allocation.targetPid === undefined
@@ -110,10 +141,25 @@ function fixture(
 			}
 		}),
 		cancel: (graceMs = 50) => {
-			cleanupDeadline = Date.now() + graceMs;
-			controller.abort();
+			startCleanup(graceMs);
 		}
 	};
+}
+
+function settlement(promise: Promise<unknown>): () => boolean {
+	let isSettled = false;
+
+	void (async () => {
+		try {
+			await promise;
+		} catch {
+			return;
+		} finally {
+			isSettled = true;
+		}
+	})();
+
+	return () => isSettled;
 }
 
 it.each([
@@ -132,7 +178,7 @@ it.each([
 	}
 );
 
-it('uses the live cleanup deadline and confirms cancellation after cleanup', async () => {
+it('uses the live cleanup allowance and confirms cancellation after cleanup', async () => {
 	const { job, output } = fixture('wait');
 
 	expect({ result: await job.run(), output }).toStrictEqual({
@@ -141,10 +187,26 @@ it('uses the live cleanup deadline and confirms cancellation after cleanup', asy
 	});
 });
 
+it('leaves the operation deadline to the caller signal', async () => {
+	const { job, allocated, clock, cancel } = fixture('sleep');
+	const running = job.run();
+	const isSettled = settlement(running);
+
+	await allocated.promise;
+	clock.advance(60_000);
+	await yieldImmediate();
+	expect(isSettled()).toBe(false);
+
+	cancel(1000);
+	expect(await running).toStrictEqual({
+		kind: 'cancelled',
+		termination: 'confirmed'
+	});
+});
+
 it.each([
 	'malformed',
 	'early-completion',
-	'timeout',
 	'live-group',
 	'observer-failure',
 	'record-failure',
@@ -152,67 +214,63 @@ it.each([
 ])('does not invent a successful result after %s', async (command) => {
 	const { job } = fixture(command);
 
-	await expect(job.run()).rejects.toMatchObject({
-		name:
-			command === 'timeout' ? 'SandboxTimeoutError' : 'SandboxTransportError'
-	});
+	await expect(job.run()).rejects.toStrictEqual(transportFailure);
 });
 
 it('rejects oversized control payloads before allocation', async () => {
 	const { job } = fixture('x'.repeat(1_048_577));
 
-	await expect(job.run()).rejects.toMatchObject({
-		name: 'InvalidSandboxRequestError'
-	});
+	await expect(job.run()).rejects.toStrictEqual(
+		new InvalidSandboxRequestError({ operation: 'exec', providerId: 'mxc' })
+	);
 });
 
-it('bounds an unresponsive child without claiming target termination', async () => {
-	const { job, allocated, cancel } = fixture('hang');
+it('stops waiting for an unresponsive child when the cleanup allowance ends', async () => {
+	const { job, allocated, clock, cancel } = fixture('hang');
 	const running = job.run();
-	const rejected = expect(running).rejects.toMatchObject({
-		name: 'SandboxTransportError',
-		completion: 'unknown'
-	});
+	const isSettled = settlement(running);
 
 	await allocated.promise;
-	cancel();
-	await rejected;
+	cancel(50);
+	clock.advance(49);
+	await yieldImmediate();
+	expect(isSettled()).toBe(false);
+
+	clock.advance(1);
+	await expect(running).rejects.toStrictEqual(transportFailure);
+});
+
+it('shortens the cleanup allowance when disposal limits it', async () => {
+	const { job, allocated, clock, cancel } = fixture('hang');
+	const running = job.run();
+	const isSettled = settlement(running);
+
+	await allocated.promise;
+	cancel(1000);
+	job.limitCleanup(50);
+	clock.advance(49);
+	await yieldImmediate();
+	expect(isSettled()).toBe(false);
+
+	clock.advance(1);
+	await expect(running).rejects.toStrictEqual(transportFailure);
 });
 
 it('does not extend a transport-failure cleanup budget when the caller later cancels', async () => {
-	vi.useFakeTimers({
-		toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout']
-	});
-
-	const { job, faulted, cancel } = fixture('fault-hang');
+	const { job, faulted, clock, cancel } = fixture('fault-hang');
 	const running = job.run();
-	let hasRejected = false;
+	const isSettled = settlement(running);
 
-	async function record(): Promise<void> {
-		await expect(running).rejects.toMatchObject({
-			name: 'SandboxTransportError',
-			completion: 'unknown'
-		});
-		hasRejected = true;
-	}
+	await faulted.promise;
+	await yieldImmediate();
+	clock.advance(1000);
+	cancel(10_000);
+	clock.advance(3999);
+	await yieldImmediate();
+	expect(isSettled()).toBe(false);
 
-	const recorded = record();
-
-	try {
-		await faulted.promise;
-		await Promise.resolve();
-		await vi.advanceTimersByTimeAsync(1000);
-		cancel(10_000);
-		await vi.advanceTimersByTimeAsync(4001);
-		expect(hasRejected).toBe(true);
-	} finally {
-		try {
-			await vi.advanceTimersByTimeAsync(20_000);
-			await recorded;
-		} finally {
-			vi.useRealTimers();
-		}
-	}
+	clock.advance(1);
+	await expect(running).rejects.toStrictEqual(transportFailure);
 });
 
 it.each(['cleanup-failure', 'completed-then-failed', 'duplicate-completion'])(
@@ -220,10 +278,7 @@ it.each(['cleanup-failure', 'completed-then-failed', 'duplicate-completion'])(
 	async (command) => {
 		const { job, output } = fixture(command);
 
-		await expect(job.run()).rejects.toMatchObject({
-			name: 'SandboxTransportError',
-			completion: 'unknown'
-		});
+		await expect(job.run()).rejects.toStrictEqual(transportFailure);
 
 		const expected =
 			command === 'cleanup-failure'
@@ -242,19 +297,17 @@ it.each(['cleanup-failure', 'completed-then-failed', 'duplicate-completion'])(
 
 it('does not release a target after recovery recording finishes beyond cancellation', async () => {
 	const gate = Promise.withResolvers<undefined>();
-	const { job, allocated, cancel, leadershipChecks, output } = fixture(
+	const { job, allocated, clock, cancel, leadershipChecks, output } = fixture(
 		'hang',
 		gate.promise
 	);
 	const running = job.run();
-	const rejected = expect(running).rejects.toMatchObject({
-		name: 'SandboxTransportError',
-		completion: 'unknown'
-	});
+	const rejected = expect(running).rejects.toStrictEqual(transportFailure);
 
 	try {
 		await allocated.promise;
-		cancel();
+		cancel(50);
+		clock.advance(50);
 		await rejected;
 		gate.resolve(undefined);
 		await yieldImmediate();
@@ -267,4 +320,31 @@ it('does not release a target after recovery recording finishes beyond cancellat
 		gate.resolve(undefined);
 		await rejected;
 	}
+});
+
+it('reports a supervisor that exits before receiving the job as not started', async () => {
+	const { job } = fixture(
+		'normal',
+		undefined,
+		fakeSupervisor((_port, child) => {
+			child.exit(3);
+		})
+	);
+
+	await expect(job.run()).rejects.toStrictEqual(
+		new SandboxOperationError({ operation: 'exec', providerId: 'mxc' })
+	);
+});
+
+it('explains an unreadable process table before reporting unknown completion', async () => {
+	const { job, diagnostics } = fixture('observer-failure');
+
+	await expect(job.run()).rejects.toStrictEqual(transportFailure);
+	expect(diagnostics).toStrictEqual([
+		{
+			level: 'warning',
+			message:
+				"MXC could not read the host process table, so it cannot confirm the state of the command's process group. Check that ps is available at /bin/ps, /usr/bin/ps or /run/current-system/sw/bin/ps."
+		}
+	]);
 });
