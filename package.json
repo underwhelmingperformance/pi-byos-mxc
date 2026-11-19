@@ -81,5 +81,6 @@
 	},
 	"bundleDependencies": [
 		"pi-bring-your-own-sandbox"
-	]
+	],
+	"license": "MIT"
 }
