@@ -6,12 +6,21 @@ import type { Host, HostEnvironment, HostFileSystem } from '../host.js';
 
 type FileMetadata = Awaited<ReturnType<HostFileSystem['stat']>>;
 
-interface MemoryStats extends Omit<FileMetadata, 'nlink'> {
+interface MemoryStats extends Omit<
+	FileMetadata,
+	'dev' | 'ino' | 'size' | 'nlink'
+> {
+	readonly dev: number | bigint;
+	readonly ino: number | bigint;
+	readonly size: number | bigint;
 	readonly nlink: number | bigint;
 }
 
 function metadata(stats: MemoryStats, isSocket: boolean): FileMetadata {
 	return {
+		dev: Number(stats.dev),
+		ino: Number(stats.ino),
+		size: Number(stats.size),
 		nlink: Number(stats.nlink),
 		isDirectory: () => stats.isDirectory(),
 		isFile: () => stats.isFile() && !isSocket,

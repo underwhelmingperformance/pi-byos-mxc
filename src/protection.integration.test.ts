@@ -8,7 +8,7 @@ import { expect, it } from 'vitest';
 
 import { UncoveredProtectedPathError } from './errors.js';
 import { systemHost } from './host.js';
-import { protectedPaths } from './protection.js';
+import { planProtection } from './protection.js';
 
 const execute = promisify(execFile);
 const git = { kind: 'git-metadata' } as const;
@@ -46,9 +46,9 @@ async function withRepository(
 
 function plan(
 	workspace: string,
-	resources: Parameters<typeof protectedPaths>[1]['resources']
+	resources: Parameters<typeof planProtection>[1]['resources']
 ) {
-	return protectedPaths(systemHost, {
+	return planProtection(systemHost, {
 		workspace,
 		backend: 'seatbelt',
 		workspaceAccess: 'read-write',
@@ -66,11 +66,13 @@ it('finds the hooks path and configuration includes that Git uses', async () => 
 		);
 		expect(
 			await plan(repository, [git, { kind: 'path', path: '.husky' }])
-		).toStrictEqual(
-			['.git', '.gitconfig', '.husky'].map((entry) =>
+		).toStrictEqual({
+			readonlyPaths: ['.git', '.gitconfig', '.husky'].map((entry) =>
 				path.join(repository, entry)
-			)
-		);
+			),
+			placeholders: [],
+			pins: []
+		});
 	});
 });
 
@@ -107,9 +109,11 @@ it('protects the pointer file of a linked worktree', async () => {
 			worktree
 		]);
 
-		expect(await plan(worktree, [git])).toStrictEqual([
-			path.join(worktree, '.git')
-		]);
+		expect(await plan(worktree, [git])).toStrictEqual({
+			readonlyPaths: [path.join(worktree, '.git')],
+			placeholders: [],
+			pins: []
+		});
 	});
 });
 
@@ -118,9 +122,11 @@ it('protects an absent repository entry outside Git', async () => {
 	const workspace = await realpath(temporary);
 
 	try {
-		expect(await plan(workspace, [git])).toStrictEqual([
-			path.join(workspace, '.git')
-		]);
+		expect(await plan(workspace, [git])).toStrictEqual({
+			readonlyPaths: [path.join(workspace, '.git')],
+			placeholders: [],
+			pins: []
+		});
 	} finally {
 		await rm(workspace, { recursive: true, force: true });
 	}

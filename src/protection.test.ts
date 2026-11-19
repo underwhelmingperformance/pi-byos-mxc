@@ -6,12 +6,12 @@ import {
 	GitMetadataUnavailableError,
 	GitUnavailableError,
 	ProtectedHardLinkError,
-	ProtectedPathAbsentError,
 	ProtectedSymbolicLinkError,
 	UncoveredProtectedPathError
 } from './errors.js';
 import { memoryHost } from './fixtures/host.js';
-import { protectedPaths } from './protection.js';
+import type { Protection } from './protection.js';
+import { planProtection } from './protection.js';
 
 const workspace = '/workspace';
 const git = { kind: 'git-metadata' } as const;
@@ -61,7 +61,7 @@ function plan(
 	return {
 		...fixture,
 		run: () =>
-			protectedPaths(fixture.host, {
+			planProtection(fixture.host, {
 				workspace,
 				backend,
 				workspaceAccess,
@@ -74,13 +74,17 @@ const repository = {
 	[gitPaths]: '/workspace/.git\n/workspace/.git\n/workspace/.git/hooks\n'
 };
 
+function grants(protection: Partial<Protection> = {}): Protection {
+	return { readonlyPaths: [], placeholders: [], pins: [], ...protection };
+}
+
 it('adds no grants when the whole workspace is read-only', async () => {
 	const { run } = plan([git, pathResource('missing')], {
 		backend: 'bubblewrap',
 		workspaceAccess: 'read-only'
 	});
 
-	expect(await run()).toStrictEqual([]);
+	expect(await run()).toStrictEqual(grants());
 });
 
 it.each(['seatbelt', 'bubblewrap'] as const)(
@@ -90,32 +94,63 @@ it.each(['seatbelt', 'bubblewrap'] as const)(
 			backend
 		});
 
-		expect(await run()).toStrictEqual(['/workspace/.envrc', '/workspace/.pi']);
+		expect(await run()).toStrictEqual(
+			grants({ readonlyPaths: ['/workspace/.envrc', '/workspace/.pi'] })
+		);
 	}
 );
 
-it('requires the top-level entry that contains a nested path', async () => {
-	const { run } = plan([pathResource('src/index.ts')]);
-
-	await expect(run()).rejects.toStrictEqual(
-		new UncoveredProtectedPathError('/workspace/src/index.ts', '/workspace/src')
-	);
-});
-
 it.each([
-	{ backend: 'seatbelt', expected: ['/workspace/.idea'] },
+	{
+		backend: 'seatbelt',
+		expected: new UncoveredProtectedPathError(
+			'/workspace/src/index.ts',
+			'/workspace/src'
+		)
+	},
 	{
 		backend: 'bubblewrap',
-		expected: new ProtectedPathAbsentError('/workspace/.idea')
+		expected: grants({
+			readonlyPaths: ['/workspace/src/index.ts'],
+			pins: ['/workspace/src']
+		})
 	}
 ] as const)(
-	'handles an absent entry with $backend',
+	'protects a nested path with $backend',
 	async ({ backend, expected }) => {
-		const { run } = plan([pathResource('.idea')], { backend });
+		const { run } = plan([pathResource('src/index.ts')], { backend });
 
-		await (Array.isArray(expected)
-			? expect(run()).resolves.toStrictEqual(expected)
-			: expect(run()).rejects.toStrictEqual(expected));
+		await (expected instanceof Error
+			? expect(run()).rejects.toStrictEqual(expected)
+			: expect(run()).resolves.toStrictEqual(expected));
+	}
+);
+
+it.each([
+	{
+		backend: 'seatbelt',
+		resource: '.idea',
+		expected: grants({ readonlyPaths: ['/workspace/.idea'] })
+	},
+	{
+		backend: 'bubblewrap',
+		resource: '.idea',
+		expected: grants({ placeholders: ['/workspace/.idea'] })
+	},
+	{
+		backend: 'bubblewrap',
+		resource: 'src/generated/hooks',
+		expected: grants({
+			placeholders: ['/workspace/src/generated'],
+			pins: ['/workspace/src']
+		})
+	}
+] as const)(
+	'covers an absent path $resource with $backend',
+	async ({ backend, resource, expected }) => {
+		const { run } = plan([pathResource(resource)], { backend });
+
+		expect(await run()).toStrictEqual(expected);
 	}
 );
 
@@ -123,7 +158,7 @@ it.each([
 	{
 		backend: 'seatbelt',
 		target: '/outside/pi',
-		expected: ['/workspace/.pi-link']
+		expected: grants({ readonlyPaths: ['/workspace/.pi-link'] })
 	},
 	{
 		backend: 'seatbelt',
@@ -145,11 +180,23 @@ it.each([
 
 		memory.symlinkSync(target, '/workspace/.pi-link');
 
-		await (Array.isArray(expected)
-			? expect(run()).resolves.toStrictEqual(expected)
-			: expect(run()).rejects.toStrictEqual(expected));
+		await (expected instanceof Error
+			? expect(run()).rejects.toStrictEqual(expected)
+			: expect(run()).resolves.toStrictEqual(expected));
 	}
 );
+
+it('rejects a symbolic link above a nested path with bubblewrap', async () => {
+	const { run, memory } = plan([pathResource('linked/hooks')], {
+		backend: 'bubblewrap'
+	});
+
+	memory.symlinkSync('/outside', '/workspace/linked');
+
+	await expect(run()).rejects.toStrictEqual(
+		new ProtectedSymbolicLinkError('/workspace/linked')
+	);
+});
 
 it('rejects a protected file with another hard link', async () => {
 	const { run, memory } = plan([pathResource('.pi')]);
@@ -179,15 +226,17 @@ it.each([
 		name: 'the repository directory',
 		output: repository,
 		resources: [git],
-		expected: ['/workspace/.git']
+		expected: grants({ readonlyPaths: ['/workspace/.git'] })
 	},
 	{
-		name: 'a hooks path that Git resolves inside the workspace',
+		name: 'a hooks path inside a protected entry',
 		output: {
 			[gitPaths]: '/workspace/.git\n/workspace/.git\n/workspace/.husky/_\n'
 		},
 		resources: [git, pathResource('.husky')],
-		expected: ['/workspace/.git', '/workspace/.husky']
+		expected: grants({
+			readonlyPaths: ['/workspace/.git', '/workspace/.husky']
+		})
 	},
 	{
 		name: 'configuration includes inside the workspace',
@@ -197,7 +246,9 @@ it.each([
 				'file:.git/config\0include.path\n../.gitconfig\0file:.git/config\0includeif.onbranch:x.path\nextra/cfg\0file:/home/user/.gitconfig\0include.path\n~/.gitconfig-work\0'
 		},
 		resources: [git],
-		expected: ['/workspace/.git', '/workspace/.gitconfig']
+		expected: grants({
+			readonlyPaths: ['/workspace/.git', '/workspace/.gitconfig']
+		})
 	},
 	{
 		name: 'the pointer file of a linked worktree',
@@ -206,7 +257,7 @@ it.each([
 				'/repository/.git/worktrees/w\n/repository/.git\n/repository/.git/hooks\n'
 		},
 		resources: [git],
-		expected: ['/workspace/.git']
+		expected: grants({ readonlyPaths: ['/workspace/.git'] })
 	}
 ])('protects Git metadata: $name', async ({ output, resources, expected }) => {
 	const { run } = plan(resources, { gitOutput: output });
@@ -214,17 +265,36 @@ it.each([
 	expect(await run()).toStrictEqual(expected);
 });
 
-it('requires the directory that contains a hooks path inside the workspace', async () => {
-	const { run } = plan([git], {
-		gitOutput: {
-			[gitPaths]: '/workspace/.git\n/workspace/.git\n/workspace/.husky/_\n'
-		}
-	});
+it.each([
+	{
+		backend: 'seatbelt',
+		expected: new UncoveredProtectedPathError(
+			'/workspace/.husky/_',
+			'/workspace/.husky'
+		)
+	},
+	{
+		backend: 'bubblewrap',
+		expected: grants({
+			readonlyPaths: ['/workspace/.git', '/workspace/.husky/_'],
+			pins: ['/workspace/.husky']
+		})
+	}
+] as const)(
+	'protects a hooks path that Git resolves inside the workspace with $backend',
+	async ({ backend, expected }) => {
+		const { run } = plan([git], {
+			backend,
+			gitOutput: {
+				[gitPaths]: '/workspace/.git\n/workspace/.git\n/workspace/.husky/_\n'
+			}
+		});
 
-	await expect(run()).rejects.toStrictEqual(
-		new UncoveredProtectedPathError('/workspace/.husky/_', '/workspace/.husky')
-	);
-});
+		await (expected instanceof Error
+			? expect(run()).rejects.toStrictEqual(expected)
+			: expect(run()).resolves.toStrictEqual(expected));
+	}
+);
 
 it('reports Git that cannot describe an existing repository', async () => {
 	const { run } = plan([git]);
@@ -236,7 +306,10 @@ it('reports Git that cannot describe an existing repository', async () => {
 });
 
 it.each([
-	{ hasRepository: false, expected: ['/workspace/.git'] },
+	{
+		hasRepository: false,
+		expected: grants({ readonlyPaths: ['/workspace/.git'] })
+	},
 	{
 		hasRepository: true,
 		expected: new GitMetadataUnavailableError(workspace, {
@@ -254,17 +327,20 @@ it.each([
 			memory.rmSync('/workspace/.git', { recursive: true });
 		}
 
-		await (Array.isArray(expected)
-			? expect(run()).resolves.toStrictEqual(expected)
-			: expect(run()).rejects.toStrictEqual(expected));
+		await (expected instanceof Error
+			? expect(run()).rejects.toStrictEqual(expected)
+			: expect(run()).resolves.toStrictEqual(expected));
 	}
 );
 
 it.each([
-	{ backend: 'seatbelt', expected: ['/workspace/.git'] },
+	{
+		backend: 'seatbelt',
+		expected: grants({ readonlyPaths: ['/workspace/.git'] })
+	},
 	{
 		backend: 'bubblewrap',
-		expected: new ProtectedPathAbsentError('/workspace/.git')
+		expected: grants({ placeholders: ['/workspace/.git'] })
 	}
 ] as const)(
 	'prevents a new repository outside Git with $backend',
@@ -273,8 +349,6 @@ it.each([
 
 		memory.rmSync('/workspace/.git', { recursive: true });
 
-		await (Array.isArray(expected)
-			? expect(run()).resolves.toStrictEqual(expected)
-			: expect(run()).rejects.toStrictEqual(expected));
+		expect(await run()).toStrictEqual(expected);
 	}
 );

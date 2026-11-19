@@ -12,8 +12,7 @@ import { EFFECTIVE_POLICY } from './policy.js';
 const execute = promisify(execFile);
 const isLinux = process.platform === 'linux';
 
-// Bubblewrap can only protect existing paths, so the Linux workspace has every
-// entry from the preset.
+// These preset entries start absent, so Linux covers them with placeholders.
 const ENTRIES = ['.direnv', '.vscode', '.idea', '.devcontainer'];
 const OBSERVED = [
 	'.git',
@@ -129,17 +128,60 @@ it('keeps host configuration immutable while ordinary workspace writes succeed',
 					path.join(workspace, '.pi', 'settings.json'),
 					'original'
 				);
-
-				if (!isLinux) {
-					return;
-				}
-
-				await writeFile(path.join(workspace, '.envrc'), 'original');
-
-				for (const entry of ENTRIES) {
-					await mkdir(path.join(workspace, entry));
-				}
 			}
 		}
 	);
 });
+
+it.skipIf(!isLinux)(
+	'protects a nested path by pinning the directories above it',
+	async () => {
+		await withNativeSandbox(
+			{},
+			async (sandbox, workspace) => {
+				const before = await observeEntry(path.join(workspace, 'tools/hooks'));
+
+				for (const command of [
+					'mv tools tools-moved',
+					'rm -rf tools',
+					'printf x > tools/hooks',
+					'mkdir -p tools/generated/x',
+					'printf x > tools/generated/hook'
+				]) {
+					await sandbox.exec({ kind: 'shell', dialect: 'sh', command });
+				}
+
+				const sibling = await sandbox.exec({
+					kind: 'shell',
+					dialect: 'sh',
+					command: 'printf ok > tools/sibling'
+				});
+
+				expect({
+					hooks: await observeEntry(path.join(workspace, 'tools/hooks')),
+					generated: await observeEntry(
+						path.join(workspace, 'tools/generated')
+					),
+					sibling: sibling.exit
+				}).toStrictEqual({
+					hooks: before,
+					generated: 'absent',
+					sibling: { kind: 'code', code: 0 }
+				});
+			},
+			{
+				policy: {
+					...EFFECTIVE_POLICY,
+					workspaceProtection: [
+						{ kind: 'path', path: 'tools/hooks' },
+						{ kind: 'path', path: 'tools/generated/hook' }
+					]
+				},
+				async prepareWorkspace(workspace) {
+					await mkdir(path.join(workspace, 'tools'));
+					await writeFile(path.join(workspace, 'tools', 'hooks'), 'original');
+				}
+			}
+		);
+	}
+);

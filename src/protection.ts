@@ -7,7 +7,6 @@ import {
 	GitMetadataUnavailableError,
 	GitUnavailableError,
 	ProtectedHardLinkError,
-	ProtectedPathAbsentError,
 	ProtectedSymbolicLinkError,
 	UncoveredProtectedPathError
 } from './errors.js';
@@ -22,6 +21,28 @@ export interface ProtectionRequest {
 	readonly backend: 'seatbelt' | 'bubblewrap';
 	readonly workspaceAccess: 'read-only' | 'read-write';
 	readonly resources: readonly WorkspaceProtection[];
+}
+
+/**
+How to keep the requested resources immutable for one backend.
+*/
+export interface Protection {
+	/**
+	Existing paths, or literal absent paths with Seatbelt, to grant read-only.
+	*/
+	readonly readonlyPaths: readonly string[];
+
+	/**
+	Absent paths to cover with an empty read-only placeholder file before each
+	Bubblewrap command.
+	*/
+	readonly placeholders: readonly string[];
+
+	/**
+	Existing directories to grant read-write as separate mounts, so that a
+	sandboxed command cannot rename them and replace a protected path inside.
+	*/
+	readonly pins: readonly string[];
 }
 
 const GIT_PATHS = [
@@ -52,15 +73,15 @@ class ProtectionPlan {
 	readonly #host: Host;
 	readonly #request: ProtectionRequest;
 	readonly #entries = new Set<string>();
+	readonly #readonly = new Set<string>();
+	readonly #placeholders = new Set<string>();
+	readonly #pins = new Set<string>();
 
 	constructor(host: Host, request: ProtectionRequest) {
 		this.#host = host;
 		this.#request = request;
 	}
 
-	// A sandboxed command can rename any writable directory, which replaces
-	// everything inside it. The workspace root cannot be renamed, so protection
-	// is only effective for its direct entries and their contents.
 	#topLevel(filename: string): string {
 		const [first = ''] = path
 			.relative(this.#request.workspace, filename)
@@ -168,28 +189,18 @@ class ProtectionPlan {
 		return path.resolve(path.dirname(file), value);
 	}
 
-	async #addGitMetadata(): Promise<string[]> {
-		this.#entries.add(path.join(this.#request.workspace, '.git'));
-
+	async #gitMetadata(): Promise<string[]> {
 		const repository = await this.#gitPaths();
 
 		if (repository.length === 0) {
-			return [];
+			return [path.join(this.#request.workspace, '.git')];
 		}
 
 		const discovered = [...repository, ...(await this.#gitIncludes())].filter(
 			(filename) => this.#isWritable(filename)
 		);
 
-		for (const filename of discovered) {
-			const topLevel = this.#topLevel(filename);
-
-			if (filename === topLevel) {
-				this.#entries.add(filename);
-			}
-		}
-
-		return discovered;
+		return [path.join(this.#request.workspace, '.git'), ...discovered];
 	}
 
 	async #inspectTree(directory: string): Promise<void> {
@@ -237,76 +248,133 @@ class ProtectionPlan {
 		}
 	}
 
-	async #inspectTopLevel(entry: string): Promise<void> {
-		const isBubblewrap = this.#request.backend === 'bubblewrap';
-
-		if (!(await this.#exists(entry))) {
-			if (isBubblewrap) {
-				throw new ProtectedPathAbsentError(entry);
+	async #metadata(filename: string) {
+		try {
+			return await this.#host.fs.lstat(filename);
+		} catch (error) {
+			if (isMissing(error)) {
+				return;
 			}
 
-			return;
+			throw error;
+		}
+	}
+
+	// Seatbelt matches literal paths, so it protects absent entries directly.
+	async #protectWithSeatbelt(entry: string): Promise<void> {
+		const metadata = await this.#metadata(entry);
+
+		this.#readonly.add(entry);
+
+		if (metadata !== undefined) {
+			await this.#inspectEntry(entry);
+		}
+	}
+
+	// Bubblewrap mounts only over existing paths and follows symbolic links.
+	// Each existing ancestor becomes its own mount so that it cannot be
+	// renamed, and the first missing component gets an empty placeholder.
+	async #protectWithBubblewrap(entry: string): Promise<void> {
+		const components = path
+			.relative(this.#request.workspace, entry)
+			.split(path.sep);
+		let current = this.#request.workspace;
+
+		for (const [index, component] of components.entries()) {
+			current = path.join(current, component);
+
+			const metadata = await this.#metadata(current);
+
+			if (metadata === undefined) {
+				this.#placeholders.add(current);
+
+				return;
+			}
+
+			if (metadata.isSymbolicLink()) {
+				throw new ProtectedSymbolicLinkError(current);
+			}
+
+			if (index < components.length - 1) {
+				this.#pins.add(current);
+			}
 		}
 
-		const metadata = await this.#host.fs.lstat(entry);
-
-		if (isBubblewrap && metadata.isSymbolicLink()) {
-			throw new ProtectedSymbolicLinkError(entry);
-		}
-
+		this.#readonly.add(entry);
 		await this.#inspectEntry(entry);
 	}
 
-	async build(): Promise<string[]> {
+	// A sandboxed command can rename any writable directory, which replaces
+	// everything inside it. Bubblewrap pins the directories above each
+	// protected path, but Seatbelt cannot stop the rename, so its protection is
+	// only effective for direct workspace entries and their contents.
+	#entriesFor(required: readonly string[]): string[] {
+		return required.filter(
+			this.#request.backend === 'bubblewrap'
+				? (filename) =>
+						required.every(
+							(other) => other === filename || !isPathWithin(other, filename)
+						)
+				: (filename) => filename === this.#topLevel(filename)
+		);
+	}
+
+	async build(): Promise<Protection> {
 		const required: string[] = [];
 
 		for (const resource of this.#request.resources) {
 			if (resource.kind === 'git-metadata') {
-				required.push(...(await this.#addGitMetadata()));
+				required.push(...(await this.#gitMetadata()));
 
 				continue;
 			}
 
-			const filename = path.join(this.#request.workspace, resource.path);
+			required.push(path.join(this.#request.workspace, resource.path));
+		}
 
-			required.push(filename);
+		const entries = [...new Set(this.#entriesFor(required))].toSorted(
+			compareText
+		);
 
-			if (filename === this.#topLevel(filename)) {
-				this.#entries.add(filename);
-			}
+		for (const entry of entries) {
+			this.#entries.add(entry);
 		}
 
 		for (const filename of required) {
 			this.#require(filename);
 		}
 
-		const entries = [...this.#entries].toSorted(compareText);
-
 		for (const entry of entries) {
-			await this.#inspectTopLevel(entry);
+			await (this.#request.backend === 'bubblewrap'
+				? this.#protectWithBubblewrap(entry)
+				: this.#protectWithSeatbelt(entry));
 		}
 
-		return entries;
+		return {
+			readonlyPaths: [...this.#readonly].toSorted(compareText),
+			placeholders: [...this.#placeholders].toSorted(compareText),
+			pins: [...this.#pins]
+				.filter((pin) => !this.#readonly.has(pin))
+				.toSorted(compareText)
+		};
 	}
 }
 
 /**
-Returns the workspace entries to grant read-only so that sandboxed commands
-cannot change the requested resources. Rejects with an
-`UnenforceablePolicyError` subclass when the backend cannot keep a resource
-immutable.
+Plans how to keep the requested resources immutable. Rejects with an
+`UnenforceablePolicyError` subclass when the backend cannot do so.
 
-Each protected path must be a direct entry of the workspace or lie inside one.
 A protected tree must not contain hard-linked files or symbolic links to
-writable workspace files. Bubblewrap mounts over existing paths only, so it also
-requires each entry to exist and not be a symbolic link.
+writable workspace files. With Seatbelt, each protected path must be a direct
+entry of the workspace or lie inside one. With Bubblewrap, protected paths and
+their ancestors must not be symbolic links.
 */
-export async function protectedPaths(
+export async function planProtection(
 	host: Host,
 	request: ProtectionRequest
-): Promise<string[]> {
+): Promise<Protection> {
 	return request.workspaceAccess === 'read-only' ||
 		request.resources.length === 0
-		? []
+		? { readonlyPaths: [], placeholders: [], pins: [] }
 		: new ProtectionPlan(host, request).build();
 }

@@ -9,6 +9,9 @@ import { pathToFileURL } from 'node:url';
 import { GitCommandError, GitUnavailableError } from './errors.js';
 
 interface FileMetadata {
+	readonly dev: number;
+	readonly ino: number;
+	readonly size: number;
 	readonly nlink: number;
 	isDirectory(): boolean;
 	isFile(): boolean;

@@ -210,18 +210,6 @@ export class UnsupportedGrantError extends UnenforceablePolicyError {
 	}
 }
 
-export class ProtectedPathAbsentError extends UnenforceablePolicyError {
-	override readonly name = 'ProtectedPathAbsentError';
-	readonly path: string;
-
-	constructor(path: string) {
-		super(
-			`Bubblewrap cannot protect ${path} because it does not exist. Create it before opening the sandbox, or remove it from the protected resources.`
-		);
-		this.path = path;
-	}
-}
-
 export class ProtectedSymbolicLinkError extends UnenforceablePolicyError {
 	override readonly name = 'ProtectedSymbolicLinkError';
 	readonly path: string;

@@ -19,11 +19,7 @@ import { expect, it } from 'vitest';
 
 import { MxcBackend } from './backend.js';
 import { validateConfig } from './config.js';
-import {
-	OverlappingPathsError,
-	ProtectedPathAbsentError,
-	UnsupportedGrantError
-} from './errors.js';
+import { OverlappingPathsError, UnsupportedGrantError } from './errors.js';
 import { cleanupControl } from './fixtures/cleanup.js';
 import { memoryHost } from './fixtures/host.js';
 import { EFFECTIVE_POLICY } from './policy.js';
@@ -70,7 +66,6 @@ interface FixtureHost {
 	readonly policy?: SandboxPolicy;
 	readonly files?: NestedDirectoryJSON;
 	readonly backend?: 'seatbelt' | 'bubblewrap';
-	readonly diagnostics?: SandboxDiagnostic[];
 	readonly sockets?: readonly string[];
 	readonly grants?: readonly string[];
 }
@@ -81,7 +76,6 @@ async function openBackend(
 		policy = EFFECTIVE_POLICY,
 		files = {},
 		backend: native = 'seatbelt',
-		diagnostics = [],
 		sockets = [],
 		grants = []
 	}: FixtureHost = {}
@@ -94,11 +88,7 @@ async function openBackend(
 			sockets
 		}
 	);
-	const context = operationContext({
-		reportDiagnostic(diagnostic) {
-			diagnostics.push(diagnostic);
-		}
-	});
+	const context = operationContext();
 	const backend = await MxcBackend.open(
 		{
 			generationId: 'test',
@@ -241,7 +231,7 @@ it('reports a confirmed completion whose recovery record cannot be removed', asy
 	await expect(execution).rejects.toMatchObject({
 		name: 'AggregateError',
 		message:
-			'MXC process completion was established, but its recovery record could not be removed.',
+			'MXC process completion was established, but its recovery state could not be cleared.',
 		errors: [failure, cause],
 		cause
 	});
@@ -533,31 +523,77 @@ it('grants protected workspace entries read-only and records the protection', as
 	});
 });
 
-it('rejects protection that Bubblewrap cannot enforce before allocation', async () => {
-	const diagnostics: SandboxDiagnostic[] = [];
-	const cause = new ProtectedPathAbsentError('/workspace/.envrc');
+it('covers an absent protected entry with a placeholder while a Bubblewrap command runs', async () => {
+	const observed: unknown[] = [];
+	const fixture = await openBackend(
+		{
+			run(options) {
+				observed.push({
+					readwritePaths: options.request.readwritePaths,
+					readonlyPaths: options.request.readonlyPaths,
+					placeholder: fixture.memory.statSync('/workspace/hooks/pre').size
+				});
+
+				return Promise.resolve(exited);
+			}
+		},
+		{
+			backend: 'bubblewrap',
+			files: { '/workspace/hooks': {} },
+			policy: {
+				...EFFECTIVE_POLICY,
+				workspaceProtection: [{ kind: 'path', path: 'hooks/pre' }]
+			}
+		}
+	);
+	const { backend, context, memory } = fixture;
+
+	await backend.exec(
+		{ kind: 'shell', dialect: 'sh', command: 'true' },
+		context
+	);
+
+	expect({
+		observed,
+		after: memory.existsSync('/workspace/hooks/pre')
+	}).toStrictEqual({
+		observed: [
+			{
+				readwritePaths: ['/workspace', scratch, '/workspace/hooks'],
+				readonlyPaths: ['/workspace/hooks/pre', '/bin/sh'],
+				placeholder: 0
+			}
+		],
+		after: false
+	});
+});
+
+it('keeps a placeholder and records it when the command outcome is unknown', async () => {
+	const failure = new SandboxTransportError({
+		operation: 'exec',
+		providerId: 'mxc'
+	});
+	const { backend, context, memory } = await openBackend(
+		{ run: () => Promise.reject(failure) },
+		{
+			backend: 'bubblewrap',
+			policy: {
+				...EFFECTIVE_POLICY,
+				workspaceProtection: [{ kind: 'path', path: '.envrc' }]
+			}
+		}
+	);
 
 	await expect(
-		openBackend(
-			{},
-			{
-				backend: 'bubblewrap',
-				diagnostics,
-				policy: {
-					...EFFECTIVE_POLICY,
-					workspaceProtection: [{ kind: 'path', path: '.envrc' }]
-				}
-			}
-		)
-	).rejects.toStrictEqual(
-		new UnsupportedSandboxPolicyError(
-			{ operation: 'open', providerId: 'mxc' },
-			{ cause }
-		)
-	);
-	expect(diagnostics).toStrictEqual([
-		{ level: 'warning', message: cause.message }
-	]);
+		backend.exec({ kind: 'shell', dialect: 'sh', command: 'job' }, context)
+	).rejects.toBe(failure);
+	expect({
+		placeholder: memory.existsSync('/workspace/.envrc'),
+		records: records(memory)
+	}).toStrictEqual({
+		placeholder: true,
+		records: [{ id: firstJob, placeholders: ['/workspace/.envrc'] }]
+	});
 });
 
 it.each([

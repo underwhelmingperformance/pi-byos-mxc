@@ -192,16 +192,28 @@ Pi settings, direnv files or editor configuration that the host later runs.
 Opening fails with `UnsupportedSandboxPolicyError` and a diagnostic when the
 backend cannot keep a resource immutable:
 
-- A protected path must be a direct entry of the workspace or lie inside one,
-  such as `.husky` for `.husky/_`. A sandboxed command could otherwise rename
-  the writable directory that contains it and create a replacement.
+- On macOS, a protected path must be a direct entry of the workspace or lie
+  inside one, such as `.husky` for `.husky/_`. Seatbelt cannot stop a sandboxed
+  command from renaming the writable directory that contains a nested path and
+  creating a replacement. On Linux, the provider grants each directory above a
+  protected path as a separate mount, which cannot be renamed, so nested paths
+  need no such entry.
 - A protected file must not have another hard link, and a symbolic link inside a
   protected tree must not point to writable workspace files.
-- On Linux, every protected entry must exist and must not be a symbolic link.
-  Bubblewrap can only mount over an existing path, and it mounts the target of a
-  symbolic link instead of the link. Create absent entries, such as an empty
-  `.envrc` or `.vscode` directory, before opening the sandbox. Seatbelt also
-  protects absent entries.
+- On Linux, a protected path and the directories above it must not be symbolic
+  links, because Bubblewrap mounts the target of a link instead of the link.
+
+Absent paths are protected too. Seatbelt denies them directly. Bubblewrap can
+only mount over a path that exists, so on Linux the provider creates an empty
+placeholder file at each absent protected path, or at its first missing
+directory, before each command, and mounts it read-only. Like the mount points
+that `sandbox-runtime` and Codex create, a placeholder is visible on the host
+while the command runs, so host tools may react to it: for example, direnv
+reports an empty, blocked `.envrc`. The provider removes a placeholder after the
+last command using it has stopped, and only while it is still the empty file
+that the provider created. Deleting a placeholder on the host during a command
+lifts its protection inside that command's sandbox. When a command's outcome is
+unknown, its placeholders stay, and its recovery record lists them.
 
 For Git metadata, the provider asks host Git for the repository directory, the
 common directory, the effective hooks directory and every configuration include.

@@ -31,10 +31,13 @@ import type { MxcConfig } from './config.js';
 import { MxcConfigError, UnenforceablePolicyError } from './errors.js';
 import type { Host, HostFileSystem } from './host.js';
 import { systemHost } from './host.js';
-import { assertDisjointPaths } from './paths.js';
+import { assertDisjointPaths, compareText } from './paths.js';
+import type { PlaceholderLease } from './placeholders.js';
+import { PlaceholderRegistry } from './placeholders.js';
 import { resolverSockets } from './platform/system-paths.js';
 import { EFFECTIVE_POLICY } from './policy.js';
-import { protectedPaths } from './protection.js';
+import type { Protection } from './protection.js';
+import { planProtection } from './protection.js';
 import { RecoveryStore } from './recovery.js';
 import type { MxcRuntime } from './runtime.js';
 import { prepareRuntime } from './runtime.js';
@@ -51,6 +54,24 @@ interface BackendDependencies {
 	readonly host: Host;
 	readonly prepareRuntime: typeof prepareRuntime;
 	readonly createJob: (options: JobOptions) => JobRunner;
+}
+
+// Backends on the same host share placeholders, so that one backend cannot
+// remove a placeholder that another backend's command still relies on.
+const registries = new WeakMap<Host['fs'], PlaceholderRegistry>();
+
+function placeholderRegistry(host: Host): PlaceholderRegistry {
+	const existing = registries.get(host.fs);
+
+	if (existing !== undefined) {
+		return existing;
+	}
+
+	const registry = new PlaceholderRegistry(host.fs);
+
+	registries.set(host.fs, registry);
+
+	return registry;
 }
 
 const DEFAULT_DEPENDENCIES: BackendDependencies = Object.freeze({
@@ -72,12 +93,16 @@ function capabilities(
 }
 
 function describePolicy(
-	runtime: MxcRuntime & { readonly protectedEntries: readonly string[] },
+	runtime: MxcRuntime & { readonly protection: Protection },
 	policy: SandboxPolicy,
 	network: MxcConfig['network'],
 	platform: NodeJS.Platform
 ): string {
 	const isSeatbelt = runtime.backend === 'seatbelt';
+	const protectedEntries = [
+		...runtime.protection.readonlyPaths,
+		...runtime.protection.placeholders
+	].toSorted(compareText);
 	const socketScope = [
 		'in the writable workspace',
 		...(isSeatbelt ? [] : ['in read-only grants']),
@@ -91,9 +116,9 @@ function describePolicy(
 	return [
 		`MXC ${runtime.backend}; ${policy.workspaceAccess === 'read-write' ? 'writable' : 'read-only'} shared workspace and private writable scratch.`,
 		filesystem,
-		...(runtime.protectedEntries.length > 0
+		...(protectedEntries.length > 0
 			? [
-					`Read-only protected workspace entries: ${runtime.protectedEntries.join(', ')}.`
+					`Read-only protected workspace entries: ${protectedEntries.join(', ')}.`
 				]
 			: []),
 		`${network} external IP mode, with ingress and host-loopback IP denied.`,
@@ -172,7 +197,7 @@ export class MxcBackend implements SandboxBackend {
 				);
 			}
 
-			const protectedEntries = await protectedPaths(dependencies.host, {
+			const protection = await planProtection(dependencies.host, {
 				workspace: runtime.workspace,
 				backend: runtime.backend,
 				workspaceAccess: request.policy.workspaceAccess,
@@ -188,7 +213,7 @@ export class MxcBackend implements SandboxBackend {
 
 			const backend = new MxcBackend(
 				request,
-				{ ...runtime, protectedEntries },
+				{ ...runtime, protection },
 				store,
 				dependencies
 			);
@@ -300,6 +325,8 @@ export class MxcBackend implements SandboxBackend {
 
 	readonly #host: Host;
 	readonly #createJob: BackendDependencies['createJob'];
+	readonly #placeholders: PlaceholderRegistry;
+	readonly #protection: Protection;
 	readonly #runtime: MxcRuntime;
 	readonly #configuration: MxcConfig;
 	readonly #store: RecoveryStore;
@@ -320,12 +347,14 @@ export class MxcBackend implements SandboxBackend {
 
 	private constructor(
 		request: SandboxOpenRequest<MxcConfig>,
-		runtime: MxcRuntime & { readonly protectedEntries: readonly string[] },
+		runtime: MxcRuntime & { readonly protection: Protection },
 		store: RecoveryStore,
 		dependencies: BackendDependencies
 	) {
 		this.#host = dependencies.host;
 		this.#createJob = dependencies.createJob;
+		this.#placeholders = placeholderRegistry(dependencies.host);
+		this.#protection = runtime.protection;
 		this.#runtime = runtime;
 		this.#configuration = request.configuration;
 		this.#store = store;
@@ -357,8 +386,16 @@ export class MxcBackend implements SandboxBackend {
 		this.recovery = store.recovery;
 		this.#grants = isWritable
 			? {
-					readwritePaths: [runtime.workspace, store.scratch],
-					readonlyPaths: [...runtime.protectedEntries, ...runtime.readonlyPaths]
+					readwritePaths: [
+						runtime.workspace,
+						store.scratch,
+						...runtime.protection.pins
+					],
+					readonlyPaths: [
+						...runtime.protection.readonlyPaths,
+						...runtime.protection.placeholders,
+						...runtime.readonlyPaths
+					]
 				}
 			: {
 					readwritePaths: [store.scratch],
@@ -418,7 +455,17 @@ export class MxcBackend implements SandboxBackend {
 			});
 		}
 
-		await this.#store.begin(id);
+		const lease = await this.#placeholders.acquire(
+			this.#protection.placeholders
+		);
+
+		try {
+			await this.#store.begin(id, lease.created);
+		} catch (error) {
+			await lease.release();
+
+			throw error;
+		}
 
 		const job = this.#createJob({
 			entry: this.#runtime.entry,
@@ -437,10 +484,21 @@ export class MxcBackend implements SandboxBackend {
 			record: (allocation) => this.#store.record(allocation)
 		});
 
-		return this.#runJob(id, job);
+		return this.#runJob(id, job, lease);
 	}
 
-	async #runJob(id: string, job: JobRunner): Promise<BackendProcessOutcome> {
+	// Removing a placeholder detaches its mount inside a running sandbox, so
+	// placeholders are released only when the target is known to have stopped.
+	async #finish(id: string, lease: PlaceholderLease): Promise<void> {
+		await lease.release();
+		await this.#store.confirmReleased(id);
+	}
+
+	async #runJob(
+		id: string,
+		job: JobRunner,
+		lease: PlaceholderLease
+	): Promise<BackendProcessOutcome> {
 		this.#runners.add(job);
 
 		try {
@@ -458,11 +516,11 @@ export class MxcBackend implements SandboxBackend {
 						error.completion === 'not-started')
 				) {
 					try {
-						await this.#store.confirmReleased(id);
+						await this.#finish(id, lease);
 					} catch (cleanupError) {
 						throw new AggregateError(
 							[error, cleanupError],
-							'MXC process completion was established, but its recovery record could not be removed.',
+							'MXC process completion was established, but its recovery state could not be cleared.',
 							{ cause: cleanupError }
 						);
 					}
@@ -471,7 +529,7 @@ export class MxcBackend implements SandboxBackend {
 				throw error;
 			}
 
-			await this.#store.confirmReleased(id);
+			await this.#finish(id, lease);
 
 			return outcome;
 		} finally {

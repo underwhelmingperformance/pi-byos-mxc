@@ -197,13 +197,26 @@ host afterwards.
 | Hard link created on the host before the sandbox | Writable        | Writable       |
 | Protected entry that is a symbolic link          | Target writable | Link removable |
 
-The provider therefore requires protected paths to be covered by a protected
-top-level entry, rejects hard-linked files and symbolic links to writable files
-in protected trees, and on Linux rejects absent entries and symbolic links.
-`src/protection.provider.test.ts` applies the `host-configuration` preset
-through Pi and BYOS and repeats the mutation matrix against real sandboxes. It
-passes on macOS ARM64 and Linux ARM64. On macOS, the same test fails without the
-protection policy because the mutations move `.git` and `.pi`.
+The provider rejects hard-linked files and symbolic links to writable files in
+protected trees. On macOS, protected paths must lie inside a protected top-level
+entry. On Linux, the provider uses the technique of `sandbox-runtime` and Codex
+CLI, which mount `/dev/null` over the first missing component. MXC binds each
+grant onto itself, so the provider creates an empty placeholder file there
+instead and grants it read-only. It also grants each existing ancestor of a
+protected path as a separate read-write mount. A probe on the Linux ARM64
+machine showed that writes, removal, renames, rename-over and `mkdir` of a
+placeholder were denied, and that renaming or removing a pinned ancestor was
+denied while files beside the protected path stayed writable. It also showed
+that unlinking a placeholder on the host while the sandbox runs detaches the
+mount inside: the path became writable, and a write reached the host. The
+provider therefore removes placeholders only after a command's processes have
+stopped. `src/protection.provider.test.ts` applies the `host-configuration`
+preset through Pi and BYOS and repeats the mutation matrix against real
+sandboxes, with the preset's absent entries left absent. It passes on macOS
+ARM64 and Linux ARM64. On Linux, a further test protects a nested path through
+pinned ancestors. Without the protection policy on macOS, the mutations move
+`.git` and `.pi`; without placeholders on Linux, they create `.envrc` and
+`.idea`.
 
 The separate `pnpm test:network` gate now runs with an HTTPS endpoint and a
 controlled IPv4 peer. The two HTTPS cases pass against `https://example.com`.

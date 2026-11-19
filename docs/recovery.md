@@ -11,10 +11,11 @@ replay the command, fall back to host execution or silently reopen the backend.
 Before allocation, BYOS receives an aggregate allocation descriptor with a
 private generation-root path and no automatic expiry. The root contains private
 job records with the job identifier, supervisor PID and, once known, the target
-PID. Startup checks that the target is the original process-group leader before
-releasing the command. An uncertain record does not confirm that the leader
-check passed. Commands, caller environment and credentials are not persisted
-there.
+PID. On Linux, a record also lists any empty placeholder files that the job
+created to protect absent workspace paths. Startup checks that the target is the
+original process-group leader before releasing the command. An uncertain record
+does not confirm that the leader check passed. Commands, caller environment and
+credentials are not persisted there.
 
 A record identifies known provider ownership. The descriptor and journal do not
 close the allocation-before-acknowledgement crash window. Missing target
@@ -50,7 +51,11 @@ A zombie cannot produce further effects.
 5. Assess scope-excluded descendants separately. Stop those processes too if
    continued workspace access is unacceptable. Resolving the recorded group
    alone cannot establish whole-workload absence.
-6. Remove only the exact provider-owned generation root after owned-resource
+6. Remove the placeholder files that a record lists once that job's processes
+   have stopped, checking that each one is still an empty file. Removing a
+   placeholder earlier detaches its mount inside a running sandbox, which lets a
+   surviving process create the protected path.
+7. Remove only the exact provider-owned generation root after owned-resource
    release has been established. Do not delete, replace or roll back the shared
    workspace. Deleting scratch or control records does not stop processes,
    revoke workspace access or release descriptors retained by excluded

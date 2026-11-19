@@ -68,7 +68,7 @@ export class RecoveryStore {
 	}
 
 	readonly #fs: HostFileSystem;
-	readonly #jobs = new Set<string>();
+	readonly #jobs = new Map<string, readonly string[]>();
 	#isClosing = false;
 	#disposal: Promise<void> | undefined;
 	readonly id: string;
@@ -86,7 +86,7 @@ export class RecoveryStore {
 			id,
 			lease:
 				'No automatic expiry. Manual recovery is required after an unconfirmed cleanup or hard host crash.',
-			instructions: `Inspect provider job records in ${root}. Match each job ID to the supervisor command line and verify current process and group identities before any action. Records identify supervisors and direct targets, not every descendant. An unreported target may still be waiting at its job-ID stdin gate. Do not signal a PID solely because a record lists it. Remove only this directory after the recorded supervisors, supervised groups and provider-owned allocations have been released. Descendants outside those groups may still modify permitted workspace files; removing this directory does not revoke their access.`
+			instructions: `Inspect provider job records in ${root}. Match each job ID to the supervisor command line and verify current process and group identities before any action. Records identify supervisors and direct targets, not every descendant. An unreported target may still be waiting at its job-ID stdin gate. Do not signal a PID solely because a record lists it. Remove only this directory after the recorded supervisors, supervised groups and provider-owned allocations have been released. Descendants outside those groups may still modify permitted workspace files; removing this directory does not revoke their access. A record's placeholders are empty files that protect absent workspace paths; remove each one only after its job's processes have stopped, and only if it is still empty.`
 		});
 	}
 
@@ -110,7 +110,11 @@ export class RecoveryStore {
 		await this.#fs.rm(this.root, { recursive: true, force: true });
 	}
 
-	async begin(id: string): Promise<void> {
+	/**
+	Records a job before its supervisor starts. `placeholders` lists the empty
+	files that the job created to protect absent workspace paths.
+	*/
+	async begin(id: string, placeholders: readonly string[] = []): Promise<void> {
 		if (this.#isClosing) {
 			throw new SandboxSessionClosingError({
 				operation: 'exec',
@@ -118,15 +122,21 @@ export class RecoveryStore {
 			});
 		}
 
-		await this.#fs.writeFile(this.#jobPath(id), JSON.stringify({ id }), {
-			flag: 'wx',
-			mode: 0o600
-		});
-		this.#jobs.add(id);
+		await this.#fs.writeFile(
+			this.#jobPath(id),
+			JSON.stringify({
+				id,
+				...(placeholders.length > 0 && { placeholders })
+			}),
+			{ flag: 'wx', mode: 0o600 }
+		);
+		this.#jobs.set(id, placeholders);
 	}
 
 	async record(allocation: JobAllocation): Promise<void> {
-		if (!this.#jobs.has(allocation.id)) {
+		const placeholders = this.#jobs.get(allocation.id);
+
+		if (placeholders === undefined) {
 			throw new UnregisteredJobError(allocation.id);
 		}
 
@@ -137,7 +147,8 @@ export class RecoveryStore {
 			supervisorPid: allocation.supervisorPid,
 			...(allocation.targetPid !== undefined && {
 				targetPid: allocation.targetPid
-			})
+			}),
+			...(placeholders.length > 0 && { placeholders })
 		};
 
 		await this.#fs.rm(temporary, { recursive: false, force: true });
