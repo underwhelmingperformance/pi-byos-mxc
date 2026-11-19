@@ -1,0 +1,18 @@
+{
+	$schema: 'https://docs.renovatebot.com/renovate-schema.json',
+	packageRules: [
+		{
+			matchPackageNames: ['typebox'],
+			groupName: null
+		},
+		{
+			matchPackageNames: ['@types/node'],
+			allowedVersions: '<25'
+		}
+	],
+	postUpgradeTasks: {
+		commands: ['pnpm fix:format'],
+		fileFilters: ['**'],
+		executionMode: 'branch'
+	}
+}
