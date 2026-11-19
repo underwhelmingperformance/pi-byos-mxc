@@ -35,7 +35,8 @@ function isEnvironment(value: unknown): value is Record<string, string> {
 function isStart(message: Record<string, unknown>): boolean {
 	return (
 		(message.backend === 'seatbelt' || message.backend === 'bubblewrap') &&
-		(message.network === 'ip-denied' || message.network === 'open-egress') &&
+		isText(message.network) &&
+		['ip-denied', 'open-egress', 'denied'].includes(message.network) &&
 		isText(message.command) &&
 		isAbsolutePath(message.shell) &&
 		isAbsolutePath(message.cwd) &&

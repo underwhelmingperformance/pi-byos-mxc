@@ -1,5 +1,29 @@
 # MXC feasibility evidence
 
+## Native macOS investigation
+
+With the BYOS SDK at `4f7a56b0` and auto-review at `0b2abd69`, a Pi 1.5.0
+session on Apple Silicon opened a writable editor and a separate read-only
+investigation. The reviewer's own tool dispatcher read a live file, returned its
+unstaged Git diff and reported a refused write.
+
+The offline profile refused the same TCP and pathname Unix socket clients that
+connected to listening host fixtures outside Seatbelt. Both clients received
+`EPERM` inside writable and read-only workspaces. Opening a symlink to an
+outside private file failed. A shell that terminated itself with `SIGTERM`
+reported signal 15.
+
+Seven sequential `:` commands in an open backend had a median round trip of 206
+ms under provider-default networking and 205 ms under denied networking on this
+Mac. These measurements include per-command supervisor startup. The file tool
+test exercised a 1.1 MB write, exact edit, ranged read, image attachment,
+directory listing, glob search and grep through Pi.
+
+A fresh pnpm 12 consumer installed the macOS ARM64 archive with Pi 1.5.0 and
+TypeBox 1.3.27. Both the reviewer test and the six-tool test passed against the
+installed archive with dependency build scripts disabled. The earlier results
+below describe MXC's generated profiles.
+
 ## Baseline
 
 The initial probes used `@microsoft/mxc-sdk@1.0.1`, Node 24.22.2, Pi 1.4.0 and

@@ -1,9 +1,9 @@
 # Experimental MXC provider for Pi
 
-This private extension registers Microsoft MXC as BYOS provider `mxc`. It
-sandboxes shell commands from cooperating BYOS consumers. The optional
-`pi-tools` entrypoint routes Pi's shell tools through BYOS. File, edit and
-search tools, other extensions and MCP processes remain host operations.
+Loading this extension activates Microsoft MXC for BYOS consumers in Pi. On
+Apple Silicon, the Codex auto-review preset can investigate a live workspace
+through a separate read-only backend with denied networking. Loading the package
+also runs Pi's active shell, file and search tools through BYOS.
 
 Termination covers the direct process and its original supervised POSIX process
 group. A child that changes group or session can continue modifying permitted
@@ -40,10 +40,9 @@ The provider also does not stop:
 
 - processes that leave their process group, which can keep running after
   cancellation or disposal;
-- host services that a command reaches through a UNIX socket from making network
-  connections on its behalf, as described in [Network access](#network-access);
-- Pi's file, edit and search tools, other extensions and MCP servers, which run
-  on the host outside the sandbox.
+- host services reached through Unix sockets under provider-default networking,
+  as described in [Network access](#network-access);
+- direct host calls from other extensions or independent MCP servers.
 
 ## Support and prerequisites
 
@@ -56,9 +55,13 @@ The provider also does not stop:
 | Windows     | Not supported                                                              |
 
 The tested baseline is Node **24.21.0** and **24.22.2**, pnpm **12.15.0**, Pi
-**1.5.0**, TypeBox **1.3.27**, MXC **1.0.1** and private BYOS commit
-`9af3b122d87bf93478918a428781cb92684876a5` (service version 1). MXC imports use
-its public `/v1` API.
+**1.5.0**, TypeBox **1.3.27** and MXC **1.0.1**. The manifest pins the BYOS SDK
+to commit `4f7a56b0c3db3a7ec94553d83b125d5f59517e39`, the same revision as the
+[auto-review fork][auto-review]. A source build requires a C compiler and the
+target platform's headers. Build the archive on the target OS and architecture.
+
+[auto-review]:
+  https://github.com/iainlane/pi-packages/commit/0b2abd69dfd8eadf7750a6267fb843c95d63667d
 
 Linux requires unprivileged user namespaces and Bubblewrap 0.5.0 or newer. Open
 egress needs additional slirp, iproute2, util-linux and firewall prerequisites.
@@ -78,100 +81,84 @@ target workspace. The provider rejects writable-grant overlaps with trusted
 runtime code or private control metadata, including symlink aliases. Do not
 install the runtime inside the project that the sandbox will modify.
 
-Use the recorded BYOS checkout as a sibling, then build both packages:
+Install the pinned dependencies and build the provider:
 
 ```sh
-cd /trusted/pi-bring-your-own-sandbox
-pnpm install --frozen-lockfile
-pnpm build
-
 cd /trusted/pi-byos-mxc
 pnpm install --frozen-lockfile
-pnpm check
+pnpm build
 ```
 
-The adapter currently has a normal local-file BYOS dependency. The BYOS checkout
-exports its TypeScript sources, which Node does not load from `node_modules`. Pi
-loads extensions through jiti, so `pi -e` works; importing `dist/extension.js`
-with plain Node does not. Packed archives use BYOS's compiled output. Both
-packages are private; no registry release is required or implied. A matching
-`0.0.0` version does not establish the BYOS baseline. Verify the checkout commit
-and rebuild before refreshing an existing local dependency.
-
-No dependency build scripts were needed for the tested macOS ARM64 path. Project
-configuration denies scripts for `koffi`, `node-pty`, `protobufjs` and
-`@google/genai`. Do not enable scripts globally to make installation succeed.
-Other platforms need their own installation and native-asset checks.
-
-From a separate target workspace, load the compiled entrypoints explicitly:
+Register the built package once for your Pi sessions:
 
 ```sh
-pi -e /trusted/pi-byos-mxc/dist/extension.js \
-   -e /trusted/pi-byos-mxc/dist/pi-tools.js \
-   -e /trusted/pi-byos-mxc/dist/diagnostics.js
+pi install /trusted/pi-byos-mxc
 ```
 
-The default factory only registers the provider. It does not select MXC, open a
-sandbox or replace tools. `pi-tools` enables BYOS shell routing; `diagnostics`
-provides BYOS diagnostics. Package metadata automatically lists only the
-provider factory. Do not load multiple copies of a factory.
+For a single session, use `pi -e /trusted/pi-byos-mxc` from the target
+workspace.
 
-Selection is personal configuration. Put the following in `byos.json` in your Pi
-agent directory if you choose to activate MXC:
+The package registers the provider and replaces the shell, file and search tools
+under their original names. Pi 1.5 enables `read`, `bash`, `edit` and `write` by
+default. If you enable `ls`, `find` or `grep`, those calls also use MXC. Your
+existing tool selection applies.
+
+With the permission system and auto-review loaded, the reviewer's default
+`codex` preset discovers MXC through BYOS and requests a read-only workspace,
+system and runtime reads, and denied networking. A personal policy requiring
+`workspace-only` prevents MXC acquisition. Linux also refuses this request.
+
+The shell integration includes user-shell commands and the configured
+outside-execution approval flow. The six file and search tools execute Pi's
+implementations with the same filesystem and network policy as a sandbox shell.
+This includes read path resolution, image decoding, edit previews and the `rg`
+and `fd` subprocesses. Load `dist/diagnostics.js` for BYOS status.
+
+### Personal settings
+
+MXC reads `mxc-sandbox.json` from Pi's agent directory. To use a writable editor
+on macOS with system reads and denied networking for ordinary tool calls, use:
 
 ```json
 {
-  "provider": "mxc",
-  "cleanup": {
-    "cancellationGraceMs": 10000,
-    "disposalTimeoutMs": 15000
-  },
-  "userShell": "bash",
-  "providerConfig": {
-    "network": "ip-denied"
-  }
+  "mode": "strict",
+  "network": "denied"
 }
 ```
 
-These cleanup values are examples, not measured requirements. The adapter uses
-the effective BYOS budgets and never silently extends them. Set `userShell` to
-`"sh"` when Bash is not available; Bash is advertised by an opened backend only
-after successful execution.
+A missing file selects `standard` mode with `network: "off"`. Standard mode
+allows configured read-only grants outside the system directories. Strict mode
+limits them to system and runtime paths. Both allow workspace writes.
+`read-only` mode removes workspace writes. All three modes protect the
+host-configuration preset by default. Add workspace entries with `protectPaths`.
+The file also accepts `backend`, `shells`, `userShell`, `readonlyPaths` and
+`environment`.
 
-The declared default policy is:
+The network settings `off` and `on` select MXC's `ip-denied` and `open-egress`
+modes. The separate `denied` setting requests the native offline policy. A
+reviewer can request that policy independently of the editor's setting. Each
+effective policy has a separate backend and private scratch directory.
 
-```json
-{
-  "workspaceAccess": "read-write",
-  "filesystemScope": "provider-default",
-  "networkAccess": "provider-default"
-}
-```
+Existing installations can keep their personal `byos.json` with provider `mxc`,
+including its policy, protection preset, provider configuration, cleanup budgets
+and outside-execution settings. Use one settings file. Reload Pi after editing
+legacy settings.
 
-A complete explicit personal policy replaces the default. Partial policies are
-rejected. Workspace access can be `read-write` or `read-only`, so a personal
-policy or a consumer's acquisition request can make the workspace read-only.
-Each negotiated policy gets its own backend and private scratch directory.
+With `system-read-only`, configured grants and shells must resolve inside the
+system and runtime directories:
 
-The filesystem scope can be `provider-default` or `system-read-only`. Both use
-the same MXC mounts. With `system-read-only`, opening fails with
-`UnsupportedSandboxPolicyError` when a configured read-only grant or shell
-resolves outside the platform's system and runtime directories:
+| Host  | Directories                                                                                                                           |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS | `/bin`, `/sbin`, `/usr`, `/System/Library`, `/System/Applications`, `/Library`, `/Applications`, `/opt`, `/private/etc`, `/nix/store` |
+| Linux | `/bin`, `/sbin`, `/usr`, `/lib*`, `/etc`, `/opt`, `/nix/store`, `/run/current-system`                                                 |
 
-| Host  | Directories                                                                                           |
-| ----- | ----------------------------------------------------------------------------------------------------- |
-| macOS | `/bin`, `/sbin`, `/usr`, `/System`, `/Library`, `/Applications`, `/opt`, `/private/etc`, `/nix/store` |
-| Linux | `/bin`, `/sbin`, `/usr`, `/lib*`, `/etc`, `/opt`, `/nix/store`, `/run/current-system`                 |
-
-A toolchain under the home directory, such as one installed by mise, therefore
-needs `provider-default`. Neither scope lets commands list or read the host home
-directory. On macOS, Seatbelt still allows file metadata reads, so a command can
-learn whether a known path exists and its size and times.
-
-The provider rejects `workspace-only` filesystem scope because MXC always
-exposes host system directories. It rejects strict `denied` network access
-because sandboxed commands can reach host services through UNIX sockets, as
-described in [Network access](#network-access).
+The provider grants the running Node executable and the packaged tool runtime
+read-only. On macOS it looks for installed `fd` and `rg` in Pi's personal `bin`
+and system installations on the host search path. It grants the selected
+executables and their resolved system libraries. An explicit `environment.PATH`
+selects your toolchain. Supply `readonlyPaths` for nonstandard installations and
+their libraries. On macOS, filesystem metadata such as existence, size and
+modification times remains visible outside the readable trees.
 
 ## Protected workspace resources
 
@@ -267,11 +254,18 @@ IP traffic. Both modes request ingress and host-loopback IP denial. Enforcement
 is delegated to the pinned MXC backend. Ingress, expanded loopback coverage and
 IPv6 validation are incomplete.
 
-Neither mode is BYOS strict denied networking. A sandboxed command can connect
-to a host service's UNIX socket and ask it to make network connections on the
-command's behalf. MXC 1.0.1 provides no option that blocks UNIX socket
-connections, so the adapter cannot close this route in general. Reachable
-sockets include:
+On macOS ARM64, BYOS `networkAccess: "denied"` selects a separate Seatbelt
+profile. The profile denies operations by default. It grants the workspace,
+scratch and runtime file access independently of network access. IP sockets,
+connections to pathname Unix sockets and Mach service lookup receive no allow
+rule. The shell inherits these restrictions across fork and exec. The default
+search path checks the native Git in Apple's developer tools before the
+`/usr/bin/git` launcher.
+
+The following Unix socket exceptions apply to provider-default networking. A
+sandboxed command can connect to a host service's UNIX socket and ask it to make
+network connections on the command's behalf. With MXC's generated profiles,
+reachable sockets include:
 
 - sockets in the writable workspace, which any host process can create;
 - on Linux, sockets in read-only grants, because a read-only mount does not
@@ -301,9 +295,10 @@ Shell requests use native `sh` or a verified Bash executable. There is no argv
 emulation, PowerShell, PTY or interactive stdin. After the release barrier,
 target stdin receives EOF. The working directory must exist; a missing directory
 fails before the command starts. Output remains bytes. A verified native result
-with unavailable status remains unavailable; the adapter does not invent a
-signal or exit code. Pi receives null exit details and failed-command
-presentation.
+under the offline macOS policy includes the exit code or signal from the kernel.
+The supervisor registers a kqueue observer before releasing the target. Under
+provider-default networking MXC can report unavailable status, which Pi displays
+as a failed command.
 
 Consumers may require `terminationScope: 'workload'`. Acquisition then fails
 without fallback or replay. Uncertain original-group termination or native
@@ -314,37 +309,13 @@ automatically readable sandbox paths.
 
 ## Packed installation and verification
 
-Pack both built private packages into a directory outside the checkouts:
+Build and pack on the intended platform. The archive includes the native
+helpers, the Pi tool worker and the pinned BYOS SDK.
 
 ```sh
-cd /trusted/pi-bring-your-own-sandbox
-pnpm pack --pack-destination /trusted/artifacts
-
-cd /trusted/pi-byos-mxc
+pnpm build
 pnpm pack --pack-destination /trusted/artifacts
 ```
-
-In a clean consumer, explicitly resolve the adapter's private BYOS dependency to
-the archived baseline. For pnpm, add this fixture-local configuration to
-`pnpm-workspace.yaml`:
-
-```yaml
----
-overrides:
-  'pi-byos-mxc>pi-bring-your-own-sandbox': file:/trusted/artifacts/pi-bring-your-own-sandbox-0.0.0.tgz
-```
-
-Install the archives with the tested host peers:
-
-```sh
-pnpm add /trusted/artifacts/pi-byos-mxc-0.0.0.tgz \
-  /trusted/artifacts/pi-bring-your-own-sandbox-0.0.0.tgz \
-  @earendil-works/pi-coding-agent@1.5.0 typebox@1.3.27 --ignore-scripts
-```
-
-This override is local to the consumer. Do not resolve the private dependency
-from an unavailable registry release or assume the adapter archive includes
-BYOS. Future CI must provision the baseline checkout or archive explicitly.
 
 Development checks:
 
@@ -358,9 +329,10 @@ MXC_EGRESS_TEST_URL=https://example.com \
 `pnpm check` runs the unit tests, which replace the host filesystem, Git, clock
 and supervisor process with in-memory implementations, and the integration
 tests, which use the real host. `pnpm test:provider` runs real MXC sandboxes.
-The integration and provider tests need Git. The HTTPS endpoint must return 200.
-Replace the example peer address with a reachable controlled IPv4 fixture. The
-source checkout includes `script/network-peer.ts`; [fixture
+The integration and provider tests need Git. The macOS search tool test needs fd
+and ripgrep on the host search path. The HTTPS endpoint must return 200. Replace
+the example peer address with a reachable controlled IPv4 fixture. The source
+checkout includes `script/network-peer.ts`; [fixture
 instructions][network-fixtures] describe its TCP, UDP, DNS and observation
 endpoints. The gate checks host reachability before and after sandbox probes,
 plus independent peer request counters. Invoked gates fail when runtimes or

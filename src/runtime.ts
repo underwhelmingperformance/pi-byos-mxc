@@ -1,4 +1,5 @@
 import { constants } from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type {
@@ -16,11 +17,13 @@ import type { Host, HostFileSystem } from './host.js';
 import { systemHost } from './host.js';
 import { assertDisjointPaths } from './paths.js';
 import { packageRoot, trustedPackages } from './platform/packages.js';
+import { darwinSearchTools } from './platform/search-tools.js';
 import { systemReadonlyPaths } from './platform/system-paths.js';
 import { resolveBackend } from './policy.js';
 
 export interface MxcRuntime {
 	readonly entry: string;
+	readonly searchDirectories?: readonly string[];
 	readonly workspace: string;
 	readonly readonlyPaths: readonly string[];
 	/**
@@ -34,10 +37,12 @@ export interface MxcRuntime {
 export interface RuntimeOptions {
 	readonly host: Host;
 	readonly supervisor: string;
+	readonly searchTools?: typeof darwinSearchTools;
 }
 
 const DEFAULT_OPTIONS: RuntimeOptions = Object.freeze({
 	host: systemHost,
+	searchTools: darwinSearchTools,
 	supervisor: fileURLToPath(
 		new URL('../dist/supervisor/entry.js', import.meta.url)
 	)
@@ -94,12 +99,17 @@ export async function prepareRuntime(
 		...(await systemReadonlyPaths(environment.platform, fs)),
 		...configuredPaths
 	];
+	const search =
+		environment.platform === 'darwin' && config.environment.PATH === undefined
+			? await options.searchTools?.(canonicalWorkspace)
+			: undefined;
+	const node = await fs.realpath(environment.execPath);
 	const protectedPaths = [
 		...(await trustedPackages(
 			options.host,
 			await packageRoot(options.host, entry)
 		)),
-		await fs.realpath(environment.execPath)
+		node
 	];
 	const shells = new Map<ShellDialect, string>([
 		['sh', await executable(fs, config.shells.sh)]
@@ -126,7 +136,14 @@ export async function prepareRuntime(
 	return {
 		entry,
 		workspace: canonicalWorkspace,
-		readonlyPaths: [...readonlyPaths, ...shells.values()],
+		...(search && { searchDirectories: search.directories }),
+		readonlyPaths: [
+			...readonlyPaths,
+			...shells.values(),
+			node,
+			path.resolve(path.dirname(entry), '../tools'),
+			...(search?.files ?? [])
+		],
 		configuredPaths: [...configuredPaths, ...shells.values()],
 		shells,
 		backend

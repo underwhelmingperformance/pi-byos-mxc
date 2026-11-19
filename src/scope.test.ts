@@ -29,6 +29,8 @@ it.each([
 it.each([
 	{ platform: 'darwin', grant: '/Users/user/.local/share/mise/installs/node' },
 	{ platform: 'darwin', grant: '/' },
+	{ platform: 'darwin', grant: '/System' },
+	{ platform: 'darwin', grant: '/System/Volumes/Data/Users/user' },
 	{ platform: 'darwin', grant: '/Volumes/External/tools' },
 	{ platform: 'darwin', grant: '/private/var/folders/xy/T/tools' },
 	{ platform: 'linux', grant: '/home/user/.cargo/bin' },

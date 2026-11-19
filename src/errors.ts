@@ -22,6 +22,36 @@ export class InvalidSettingsError extends MxcConfigError {
 	}
 }
 
+export class SettingsFileSyntaxError extends MxcConfigError {
+	override readonly name = 'SettingsFileSyntaxError';
+	readonly file: string;
+
+	constructor(file: string, options: ErrorOptions) {
+		super(`The MXC settings file ${file} is not valid JSON.`, options);
+		this.file = file;
+	}
+}
+
+export class InvalidSettingsFileError extends MxcConfigError {
+	override readonly name = 'InvalidSettingsFileError';
+	readonly file: string;
+
+	/**
+	JSON pointers to the invalid settings. `''` refers to the whole file.
+	*/
+	readonly paths: readonly string[];
+
+	constructor(file: string, paths: readonly string[]) {
+		super(
+			paths.includes('')
+				? `The MXC settings file ${file} must contain a JSON object.`
+				: `The MXC settings file ${file} has invalid values at ${paths.join(', ')}.`
+		);
+		this.file = file;
+		this.paths = paths;
+	}
+}
+
 export class UnsupportedBackendError extends MxcConfigError {
 	override readonly name = 'UnsupportedBackendError';
 	readonly platform: NodeJS.Platform;

@@ -1,13 +1,14 @@
 import type { SpawnOptions } from 'node:child_process';
 import { spawn } from 'node:child_process';
+import { constants } from 'node:os';
 import path from 'node:path';
-import type { Writable } from 'node:stream';
-import { Readable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 
 import type {
 	BackendProcessContext,
-	BackendProcessOutcome
+	BackendProcessOutcome,
+	ProcessExit
 } from 'pi-bring-your-own-sandbox/api';
 import {
 	InvalidSandboxRequestError,
@@ -31,6 +32,30 @@ const FAILURE_CLEANUP_MS = 5000;
 
 function listLocations(locations: readonly string[]): string {
 	return `${locations.slice(0, -1).join(', ')} or ${locations.at(-1) ?? ''}`;
+}
+
+function processExit(
+	message: Extract<ChildMessage, { kind: 'completed' }>
+): ProcessExit {
+	if (message.signalNumber !== undefined) {
+		const signal = Object.entries(constants.signals).find(
+			([, number]) => number === message.signalNumber
+		);
+
+		if (!signal) {
+			throw new Error('The exit observer reported an unknown signal.');
+		}
+
+		return {
+			kind: 'signal',
+			signal: signal[0],
+			signalNumber: message.signalNumber
+		};
+	}
+
+	return message.exitCode === -1
+		? { kind: 'unavailable' }
+		: { kind: 'code', code: message.exitCode };
 }
 
 export interface JobAllocation {
@@ -59,6 +84,7 @@ export interface SupervisorProcess {
 
 export interface JobOptions {
 	readonly entry: string;
+	readonly input?: Uint8Array;
 	readonly request: StartMessage;
 	readonly context: BackendProcessContext;
 	readonly record: (allocation: JobAllocation) => Promise<void>;
@@ -342,13 +368,7 @@ export class SupervisorJob {
 			return;
 		}
 
-		this.#result.resolve({
-			kind: 'exited',
-			exit:
-				message.exitCode === -1
-					? { kind: 'unavailable' }
-					: { kind: 'code', code: message.exitCode }
-		});
+		this.#result.resolve({ kind: 'exited', exit: processExit(message) });
 	}
 
 	async #receive(message: ChildMessage): Promise<void> {
@@ -440,12 +460,30 @@ export class SupervisorJob {
 			[this.#options.entry, this.#options.request.id],
 			{
 				cwd: path.dirname(this.#options.entry),
-				stdio: ['ignore', 'ignore', 'ignore', 'ipc', 'pipe', 'pipe'],
+				stdio: [
+					this.#options.input === undefined ? 'ignore' : 'pipe',
+					'ignore',
+					'ignore',
+					'ipc',
+					'pipe',
+					'pipe'
+				],
 				env: { PATH: SYSTEM_PATH }
 			}
 		);
 
 		this.#child = child;
+
+		const input = child.stdio[0];
+
+		if (this.#options.input !== undefined && input instanceof Writable) {
+			input.on('error', (error: NodeJS.ErrnoException) => {
+				if (error.code !== 'EPIPE') {
+					this.#fail();
+				}
+			});
+			input.end(this.#options.input);
+		}
 
 		child.on('error', () => {
 			this.#reject();

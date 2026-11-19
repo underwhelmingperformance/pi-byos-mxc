@@ -29,6 +29,7 @@ interface RuntimeOptions {
 		agentDirectory: string
 	) => void | Promise<void>;
 	readonly includeBuiltins?: boolean;
+	readonly extensionPaths?: string[];
 	readonly tools?: readonly string[];
 }
 
@@ -42,6 +43,9 @@ export async function withPiRuntime(
 ): Promise<void> {
 	const directory = await mkdtemp(path.join(tmpdir(), 'pi-byos-mxc-pi-'));
 	const agentDirectory = path.join(directory, 'agent');
+	const previousAgentDirectory = process.env.PI_CODING_AGENT_DIR;
+
+	process.env.PI_CODING_AGENT_DIR = agentDirectory;
 
 	await mkdir(agentDirectory);
 
@@ -80,6 +84,7 @@ export async function withPiRuntime(
 				settingsManager: SettingsManager.inMemory(),
 				resourceLoaderOptions: {
 					noExtensions: true,
+					additionalExtensionPaths: fixtureOptions?.extensionPaths ?? [],
 					noSkills: true,
 					noThemes: true,
 					noPromptTemplates: true,
@@ -129,6 +134,12 @@ export async function withPiRuntime(
 	} catch (error) {
 		throw new PiRuntimeError(VERSION, process.version, { cause: error });
 	} finally {
+		if (previousAgentDirectory === undefined) {
+			delete process.env.PI_CODING_AGENT_DIR;
+		} else {
+			process.env.PI_CODING_AGENT_DIR = previousAgentDirectory;
+		}
+
 		await rm(directory, { recursive: true, force: true });
 	}
 }

@@ -19,7 +19,7 @@ const startSchema = Type.Object({
 	kind: Type.Literal('start'),
 	id,
 	backend: Type.Enum(['seatbelt', 'bubblewrap']),
-	network: Type.Enum(['ip-denied', 'open-egress']),
+	network: Type.Enum(['ip-denied', 'open-egress', 'denied']),
 	command: text,
 	shell: absolutePath,
 	cwd: absolutePath,
@@ -34,6 +34,7 @@ const parentSchema = Type.Union([
 	Type.Object({ version, kind: Type.Literal('release'), id }),
 	Type.Object({ version, kind: Type.Literal('cancel'), id })
 ]);
+const signalNumber = Type.Optional(Type.Integer({ minimum: 1, maximum: 127 }));
 const childSchema = Type.Union([
 	Type.Object({ version, kind: Type.Literal('ready') }),
 	Type.Object({
@@ -47,6 +48,7 @@ const childSchema = Type.Union([
 		kind: Type.Literal('completed'),
 		id,
 		exitCode: Type.Integer(),
+		signalNumber,
 		warnings: Type.Integer({ minimum: 0, maximum: 64 })
 	}),
 	Type.Object({ version, kind: Type.Literal('failed'), id })

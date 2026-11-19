@@ -4,17 +4,20 @@ import { Compile } from 'typebox/compile';
 
 import { InvalidSettingsError } from './errors.js';
 
-const absolutePath = Type.String({ pattern: '^/[^\\u0000]*$' });
+export const absolutePath = Type.String({ pattern: '^/[^\\u0000]*$' });
+
 const text = Type.String({ pattern: '^[^\\u0000]*$' });
-const shellsSchema = Type.Object(
+
+export const shellsSchema = Type.Object(
 	{ sh: absolutePath, bash: Type.Optional(absolutePath) },
 	{ additionalProperties: false }
 );
-const environmentSchema = Type.Record(
+export const environmentSchema = Type.Record(
 	Type.String({ pattern: '^[^=\\u0000]+$' }),
 	text,
 	{ additionalProperties: false }
 );
+
 const schema = Type.Object(
 	{
 		backend: Type.Optional(Type.Enum(['auto', 'seatbelt', 'bubblewrap'])),
@@ -37,17 +40,29 @@ export type MxcConfig = {
 	>;
 };
 
+/**
+Returns JSON pointers to the most specific invalid values in `input`. TypeBox
+also reports each object that contains an invalid property, so containing
+paths are omitted.
+*/
+export function invalidPaths(
+	schemaValidator: {
+		Errors(value: unknown): readonly { readonly instancePath: string }[];
+	},
+	input: unknown
+): string[] {
+	const paths = new Set(
+		schemaValidator.Errors(input).map((error) => error.instancePath)
+	);
+
+	return [...paths].filter((candidate) =>
+		[...paths].every((other) => !other.startsWith(`${candidate}/`))
+	);
+}
+
 export function validateConfig(input: unknown): MxcConfig {
 	if (!validator.Check(input)) {
-		const paths = new Set(
-			validator.Errors(input).map((error) => error.instancePath)
-		);
-
-		throw new InvalidSettingsError(
-			[...paths].filter((candidate) =>
-				[...paths].every((other) => !other.startsWith(`${candidate}/`))
-			)
-		);
+		throw new InvalidSettingsError(invalidPaths(validator, input));
 	}
 
 	return Object.freeze({

@@ -1,10 +1,14 @@
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { Sandbox } from 'pi-bring-your-own-sandbox/api';
+import type {
+	Sandbox,
+	SandboxAcquireOptions
+} from 'pi-bring-your-own-sandbox/api';
 import {
 	getSandbox,
-	initialiseSandboxHost
+	initialiseSandboxHost,
+	negotiateSandbox
 } from 'pi-bring-your-own-sandbox/api';
 import { expect } from 'vitest';
 
@@ -21,6 +25,7 @@ interface NativeSandboxOptions {
 	The personal BYOS policy. Defaults to the provider's effective policy.
 	*/
 	readonly policy?: unknown;
+	readonly requirements?: SandboxAcquireOptions;
 
 	/**
 	Prepares the workspace before Pi starts.
@@ -39,7 +44,6 @@ export async function withNativeSandbox(
 	check: (sandbox: Sandbox, workspace: string) => Promise<void>,
 	options: NativeSandboxOptions = {}
 ): Promise<void> {
-	let agentDirectory = '';
 	const checks = new CommandChecks();
 
 	await withPiRuntime(
@@ -47,7 +51,7 @@ export async function withNativeSandbox(
 			{
 				name: 'host',
 				factory(pi) {
-					initialiseSandboxHost(pi, { agentDirectory });
+					initialiseSandboxHost(pi, {});
 				}
 			},
 			{ name: 'mxc', factory: mxc },
@@ -58,7 +62,17 @@ export async function withNativeSandbox(
 						description: 'Verify a native MXC boundary.',
 						handler: (_arguments, context) =>
 							checks.run(async () => {
-								const opening = getSandbox(pi, context);
+								if (options.requirements) {
+									const negotiation = await negotiateSandbox(
+										pi,
+										context,
+										options.requirements
+									);
+
+									expect(negotiation.ok).toBe(true);
+								}
+
+								const opening = getSandbox(pi, context, options.requirements);
 
 								if (options.verifyOpening !== undefined) {
 									await options.verifyOpening(opening);
@@ -79,7 +93,6 @@ export async function withNativeSandbox(
 		},
 		{
 			async prepare(directory, personal) {
-				agentDirectory = personal;
 				await options.prepareWorkspace?.(directory);
 				await writeFile(
 					path.join(personal, 'byos.json'),

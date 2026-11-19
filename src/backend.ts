@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import type {
+	BackendFiles,
 	BackendProcessContext,
 	BackendProcessOutcome,
 	ProcessRequest,
@@ -29,6 +30,7 @@ import {
 
 import type { MxcConfig } from './config.js';
 import { MxcConfigError, UnenforceablePolicyError } from './errors.js';
+import { sandboxFiles } from './files.js';
 import type { Host, HostFileSystem } from './host.js';
 import { systemHost } from './host.js';
 import { assertDisjointPaths, compareText } from './paths.js';
@@ -81,13 +83,20 @@ const DEFAULT_DEPENDENCIES: BackendDependencies = Object.freeze({
 });
 
 function capabilities(
-	shells: ReadonlyMap<ShellDialect, string>
+	shells: ReadonlyMap<ShellDialect, string>,
+	isOffline: boolean
 ): SandboxCapabilities {
 	return Object.freeze({
-		operations: Object.freeze(['exec', 'workspace.protection'] as const),
+		operations: Object.freeze([
+			'exec',
+			'workspace.protection',
+			'files.read',
+			'files.list',
+			'files.write'
+		] as const),
 		processKinds: Object.freeze(['shell'] as const),
 		shells: Object.freeze(shells.keys().toArray()),
-		exitStatus: 'optional',
+		exitStatus: isOffline ? 'guaranteed' : 'optional',
 		terminationScope: 'process-group'
 	});
 }
@@ -121,8 +130,14 @@ function describePolicy(
 					`Read-only protected workspace entries: ${protectedEntries.join(', ')}.`
 				]
 			: []),
-		`${network} external IP mode, with ingress and host-loopback IP denied.`,
-		`Commands can connect to host services through UNIX sockets ${socketScope}; those services can make network connections on the command's behalf.`,
+		...(policy.networkAccess === 'denied'
+			? [
+					'Seatbelt denies IP networking, pathname UNIX socket connections and Mach service lookup.'
+				]
+			: [
+					`${network} external IP mode, with ingress and host-loopback IP denied.`,
+					`Commands can connect to host services through UNIX sockets ${socketScope}; those services can make network connections on the command's behalf.`
+				]),
 		'No general resource quotas.',
 		'Termination covers only the direct process and original supervised POSIX group. Descendants in other groups or sessions may keep modifying permitted files after completion, cancellation, timeout or disposal, even when their parent waited.',
 		'Detached submission is not supported.'
@@ -176,7 +191,8 @@ export class MxcBackend implements SandboxBackend {
 		try {
 			if (
 				request.policy.filesystemScope === 'workspace-only' ||
-				request.policy.networkAccess !== 'provider-default'
+				(request.policy.networkAccess === 'denied' &&
+					dependencies.host.environment.platform !== 'darwin')
 			) {
 				throw new UnsupportedSandboxPolicyError({
 					operation: 'open',
@@ -252,7 +268,10 @@ export class MxcBackend implements SandboxBackend {
 					bash.exit.code !== 0
 				) {
 					backend.#shells.delete('bash');
-					backend.#capabilities = capabilities(backend.#shells);
+					backend.#capabilities = capabilities(
+						backend.#shells,
+						request.policy.networkAccess === 'denied'
+					);
 					context.reportDiagnostic({
 						level: 'warning',
 						message:
@@ -342,6 +361,7 @@ export class MxcBackend implements SandboxBackend {
 	readonly id: string;
 	readonly workspace: SandboxWorkspace;
 	readonly policy: SandboxPolicy;
+	readonly files: BackendFiles;
 	readonly policyDescription: string;
 	readonly recovery: RecoveryDescriptor;
 
@@ -359,7 +379,10 @@ export class MxcBackend implements SandboxBackend {
 		this.#configuration = request.configuration;
 		this.#store = store;
 		this.#shells = new Map(runtime.shells);
-		this.#capabilities = capabilities(this.#shells);
+		this.#capabilities = capabilities(
+			this.#shells,
+			request.policy.networkAccess === 'denied'
+		);
 
 		const protection = request.policy.workspaceProtection;
 
@@ -367,6 +390,7 @@ export class MxcBackend implements SandboxBackend {
 			...EFFECTIVE_POLICY,
 			workspaceAccess: request.policy.workspaceAccess,
 			filesystemScope: request.policy.filesystemScope,
+			networkAccess: request.policy.networkAccess,
 			...(protection !== undefined && { workspaceProtection: protection })
 		});
 		this.id = `mxc:${request.generationId}:${store.id}`;
@@ -401,6 +425,18 @@ export class MxcBackend implements SandboxBackend {
 					readwritePaths: [store.scratch],
 					readonlyPaths: [runtime.workspace, ...runtime.readonlyPaths]
 				};
+
+		const helper = path.resolve(path.dirname(runtime.entry), '../native/files');
+
+		this.files = sandboxFiles(
+			runtime.workspace,
+			helper,
+			(command, context, input) =>
+				this.#run({ kind: 'shell', dialect: 'sh', command }, context, {
+					helper,
+					...(input !== undefined && { input })
+				})
+		);
 		this.policyDescription = describePolicy(
 			runtime,
 			this.policy,
@@ -412,7 +448,8 @@ export class MxcBackend implements SandboxBackend {
 	async #execute(
 		request: ProcessRequest & { kind: 'shell' },
 		context: BackendProcessContext,
-		shell: string
+		shell: string,
+		internal?: { helper: string; input?: Uint8Array }
 	): Promise<BackendProcessOutcome> {
 		const cwd = await workingDirectory(
 			this.#host.fs,
@@ -427,21 +464,36 @@ export class MxcBackend implements SandboxBackend {
 			kind: 'start',
 			id,
 			backend: this.#runtime.backend,
-			network: this.#configuration.network,
+			network:
+				this.policy.networkAccess === 'denied'
+					? 'denied'
+					: this.#configuration.network,
 			command: request.command,
 			shell,
 			cwd,
 			readwritePaths: [...this.#grants.readwritePaths],
 			environment: targetEnvironment(
 				{
-					PATH: SYSTEM_PATH,
+					PATH: [
+						...(this.policy.networkAccess === 'denied'
+							? [
+									'/Library/Developer/CommandLineTools/usr/bin',
+									'/Applications/Xcode.app/Contents/Developer/usr/bin'
+								]
+							: []),
+						SYSTEM_PATH,
+						...(this.#runtime.searchDirectories ?? [])
+					].join(':'),
 					HOME: this.#store.scratch,
 					TMPDIR: this.#store.scratch,
-					...this.#configuration.environment
+					...(internal === undefined && this.#configuration.environment)
 				},
 				request.env
 			),
-			readonlyPaths: [...this.#grants.readonlyPaths],
+			readonlyPaths: [
+				...this.#grants.readonlyPaths,
+				...(internal ? [internal.helper] : [])
+			],
 			deniedPaths: await resolverSockets(
 				this.#host.environment.platform,
 				this.#host.fs
@@ -470,6 +522,7 @@ export class MxcBackend implements SandboxBackend {
 		const job = this.#createJob({
 			entry: this.#runtime.entry,
 			request: invocation,
+			...(internal?.input !== undefined && { input: internal.input }),
 			context: {
 				...context,
 				signal,
@@ -557,13 +610,10 @@ export class MxcBackend implements SandboxBackend {
 		}
 	}
 
-	get capabilities(): SandboxCapabilities {
-		return this.#capabilities;
-	}
-
-	async exec(
+	async #run(
 		request: ProcessRequest,
-		context: BackendProcessContext
+		context: BackendProcessContext,
+		internal?: { helper: string; input?: Uint8Array }
 	): Promise<BackendProcessOutcome> {
 		if (this.#isClosing) {
 			throw new SandboxSessionClosingError({
@@ -588,7 +638,12 @@ export class MxcBackend implements SandboxBackend {
 			});
 		}
 
-		const running = this.#execute(request, context, shell);
+		const running = this.#execute(
+			request,
+			context,
+			internal ? '/bin/sh' : shell,
+			internal
+		);
 
 		this.#jobs.add(running);
 
@@ -597,6 +652,17 @@ export class MxcBackend implements SandboxBackend {
 		} finally {
 			this.#jobs.delete(running);
 		}
+	}
+
+	get capabilities(): SandboxCapabilities {
+		return this.#capabilities;
+	}
+
+	exec(
+		request: ProcessRequest,
+		context: BackendProcessContext
+	): Promise<BackendProcessOutcome> {
+		return this.#run(request, context);
 	}
 
 	dispose(context: SandboxOperationContext): Promise<void> {

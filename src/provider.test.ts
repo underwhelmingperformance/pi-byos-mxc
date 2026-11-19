@@ -22,7 +22,13 @@ it('advertises process-group shell execution and delegated policy defaults', () 
 		id: 'mxc',
 		protocolVersion: 1,
 		capabilities: {
-			operations: ['exec', 'workspace.protection'],
+			operations: [
+				'exec',
+				'workspace.protection',
+				'files.read',
+				'files.list',
+				'files.write'
+			],
 			processKinds: ['shell'],
 			shells: ['sh', 'bash'],
 			exitStatus: 'optional',
@@ -31,15 +37,17 @@ it('advertises process-group shell execution and delegated policy defaults', () 
 		policies: {
 			workspaceAccess: ['read-write', 'read-only'],
 			filesystemScope: ['provider-default', 'system-read-only'],
-			networkAccess: ['provider-default']
+			networkAccess:
+				process.platform === 'darwin'
+					? ['provider-default', 'denied']
+					: ['provider-default']
 		},
 		defaultPolicy: EFFECTIVE_POLICY
 	});
 });
 
 it.each<SandboxPolicy>([
-	{ ...EFFECTIVE_POLICY, filesystemScope: 'workspace-only' },
-	{ ...EFFECTIVE_POLICY, networkAccess: 'denied' }
+	{ ...EFFECTIVE_POLICY, filesystemScope: 'workspace-only' }
 ])('rejects unsupported policy before allocation: %j', async (policy) => {
 	const recoveries: RecoveryDescriptor[] = [];
 	let isConfirmed = false;

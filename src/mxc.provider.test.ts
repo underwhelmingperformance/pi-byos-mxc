@@ -1,5 +1,14 @@
 import { execFile } from 'node:child_process';
-import { access, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import {
+	access,
+	mkdir,
+	mkdtemp,
+	readFile,
+	realpath,
+	rm,
+	stat,
+	writeFile
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -120,11 +129,36 @@ defineSandboxProviderTests({
 		} as const;
 		const command = "printf '\\000\\377\\012'; printf error >&2; exit 7";
 
+		const seeded = path.join(workspace, 'seeded');
+		const data = Uint8Array.of(0, 255, 10);
+
+		await mkdir(seeded);
+		await writeFile(path.join(seeded, 'data'), data);
+
+		const metadata = await stat(seeded);
+		const directory = path.join(workspace, 'new', 'nested');
+		const destination = path.join(directory, 'file');
+
 		allocations.set(workspace, resources);
 		jobs.set(workspace, new Map());
 
 		return {
 			configuration: {},
+			read: {
+				path: path.join(seeded, 'data'),
+				bytes: data,
+				missingPath: path.join(seeded, 'missing')
+			},
+			write: {
+				directory,
+				path: destination,
+				read: async () => new Uint8Array(await readFile(destination))
+			},
+			list: {
+				path: seeded,
+				stat: { kind: 'directory', size: metadata.size },
+				entries: [{ name: 'data', kind: 'file' }]
+			},
 			hostWorkspace: workspace,
 			policy: EFFECTIVE_POLICY,
 			shells: {

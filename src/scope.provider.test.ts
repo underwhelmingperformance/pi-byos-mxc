@@ -36,7 +36,7 @@ it('preserves the declared boundary when a waiting child changes session across 
 	const outside = path.join(canaries, 'outside');
 	const readonly = path.join(canaries, 'readonly');
 	const checks = new CommandChecks();
-	let agentDirectory = '';
+
 	let probe: ScopedChild | undefined;
 	let oldRoot: string | undefined;
 	let oldBackend: string | undefined;
@@ -50,7 +50,7 @@ it('preserves the declared boundary when a waiting child changes session across 
 				{
 					name: 'host',
 					factory(pi) {
-						initialiseSandboxHost(pi, { agentDirectory });
+						initialiseSandboxHost(pi, {});
 					}
 				},
 				{ name: 'mxc', factory: mxc },
@@ -179,7 +179,6 @@ it('preserves the declared boundary when a waiting child changes session across 
 			},
 			{
 				async prepare(workspace, personal) {
-					agentDirectory = personal;
 					probe = new ScopedChild(workspace, outside, readonly);
 					await writeFile(
 						path.join(personal, 'byos.json'),

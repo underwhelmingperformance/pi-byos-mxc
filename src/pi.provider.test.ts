@@ -6,13 +6,13 @@ import {
 	getSandbox,
 	initialiseSandboxHost
 } from 'pi-bring-your-own-sandbox/api';
-import sandboxTools from 'pi-bring-your-own-sandbox/pi-tools';
 import { assert, expect, it } from 'vitest';
 
 import mxc from './extension.js';
 import { CommandChecks } from './fixtures/command-checks.js';
 import { withPiRuntime } from './fixtures/pi-runtime.js';
 import { ScriptedModel } from './fixtures/scripted-model.js';
+import mxcPackage from './mxc.js';
 import { EFFECTIVE_POLICY } from './policy.js';
 
 async function configure(
@@ -29,7 +29,6 @@ async function configure(
 }
 
 it('uses real shell consumers and releases the old allocation on session replacement', async () => {
-	let agentDirectory = '';
 	let previous: Sandbox | undefined;
 	let oldRoot = '';
 	const checks = new CommandChecks();
@@ -39,7 +38,7 @@ it('uses real shell consumers and releases the old allocation on session replace
 			{
 				name: 'host',
 				factory(pi) {
-					initialiseSandboxHost(pi, { agentDirectory });
+					initialiseSandboxHost(pi, {});
 				}
 			},
 			{ name: 'mxc', factory: mxc },
@@ -75,7 +74,13 @@ it('uses real shell consumers and releases the old allocation on session replace
 									stdout: 'target',
 									contents: 'shared',
 									capabilities: {
-										operations: ['exec', 'workspace.protection'],
+										operations: [
+											'exec',
+											'workspace.protection',
+											'files.read',
+											'files.list',
+											'files.write'
+										],
 										processKinds: ['shell'],
 										shells: ['sh', 'bash'],
 										exitStatus: 'optional',
@@ -123,7 +128,6 @@ it('uses real shell consumers and releases the old allocation on session replace
 		},
 		{
 			async prepare(directory, personal) {
-				agentDirectory = personal;
 				await configure(directory, personal);
 			}
 		}
@@ -133,7 +137,6 @@ it('uses real shell consumers and releases the old allocation on session replace
 });
 
 it('retains a valid default shell when the Bash probe fails', async () => {
-	let agentDirectory = '';
 	const checks = new CommandChecks();
 
 	await withPiRuntime(
@@ -141,7 +144,7 @@ it('retains a valid default shell when the Bash probe fails', async () => {
 			{
 				name: 'host',
 				factory(pi) {
-					initialiseSandboxHost(pi, { agentDirectory });
+					initialiseSandboxHost(pi, {});
 				}
 			},
 			{ name: 'mxc', factory: mxc },
@@ -161,7 +164,13 @@ it('retains a valid default shell when the Bash probe fails', async () => {
 									defaultShell: sandbox.workspace.defaultShell
 								}).toStrictEqual({
 									capabilities: {
-										operations: ['exec', 'workspace.protection'],
+										operations: [
+											'exec',
+											'workspace.protection',
+											'files.read',
+											'files.list',
+											'files.write'
+										],
 										processKinds: ['shell'],
 										shells: ['sh'],
 										exitStatus: 'optional',
@@ -182,7 +191,6 @@ it('retains a valid default shell when the Bash probe fails', async () => {
 		},
 		{
 			async prepare(_directory, personal) {
-				agentDirectory = personal;
 				await writeFile(
 					path.join(personal, 'byos.json'),
 					JSON.stringify({
@@ -226,7 +234,6 @@ it.each([
 ])(
 	'preserves Pi hooks and results for $label',
 	async ({ command, isAllowed, expected, isError }) => {
-		let agentDirectory = '';
 		const model = new ScriptedModel([
 			{ type: 'toolCall', id: 'shell', name: 'bash', arguments: { command } }
 		]);
@@ -237,11 +244,10 @@ it.each([
 				{
 					name: 'host',
 					factory(pi) {
-						initialiseSandboxHost(pi, { agentDirectory });
+						initialiseSandboxHost(pi, {});
 					}
 				},
-				{ name: 'mxc', factory: mxc },
-				{ name: 'byos-tools', factory: sandboxTools },
+				{ name: 'mxc', factory: mxcPackage },
 				model.extension,
 				{
 					name: 'approval',
@@ -257,8 +263,6 @@ it.each([
 				}
 			],
 			async (runtime, errors) => {
-				runtime.session.setActiveToolsByName(['bash']);
-
 				const selected = runtime.session.modelRuntime.getModel(
 					'scripted',
 					'scripted'
@@ -284,8 +288,8 @@ it.each([
 				});
 			},
 			{
+				includeBuiltins: true,
 				async prepare(directory, personal) {
-					agentDirectory = personal;
 					await configure(directory, personal);
 				}
 			}

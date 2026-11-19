@@ -16,6 +16,7 @@ import { expect, it } from 'vitest';
 import type { MxcConfig } from './config.js';
 import { CommandChecks } from './fixtures/command-checks.js';
 import { withPiRuntime } from './fixtures/pi-runtime.js';
+import { legacySettings } from './legacy-settings.js';
 import { EFFECTIVE_POLICY } from './policy.js';
 import { provider } from './provider.js';
 
@@ -34,7 +35,7 @@ it.each([
 	},
 	{
 		label: 'unsupported explicit policy',
-		policy: { ...EFFECTIVE_POLICY, networkAccess: 'denied' },
+		policy: { ...EFFECTIVE_POLICY, filesystemScope: 'workspace-only' },
 		expected: [],
 		error: 'UnsupportedSandboxPolicyError'
 	},
@@ -68,8 +69,18 @@ it.each([
 				{
 					name: 'policy-fixture',
 					factory(pi) {
-						initialiseSandboxHost(pi, { agentDirectory });
-						registerSandboxProvider(pi, unavailable);
+						initialiseSandboxHost(pi, {});
+						registerSandboxProvider(pi, unavailable, {
+							configure: () => {
+								const settings = legacySettings(agentDirectory);
+
+								if (!settings) {
+									throw new Error('Missing test settings.');
+								}
+
+								return settings;
+							}
+						});
 						pi.registerCommand('verify-policy', {
 							description: 'Verify policy selection without native allocation.',
 							handler: (_arguments, context) =>

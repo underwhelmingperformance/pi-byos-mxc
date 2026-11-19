@@ -81,7 +81,7 @@ it('rejects a configured grant in the host home directory', async () => {
 					new UnsupportedSandboxPolicyError(
 						{
 							operation: 'open',
-							configurationSource: 'personal',
+							configurationSource: 'extension',
 							providerId: 'mxc'
 						},
 						{ cause: provider }

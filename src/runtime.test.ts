@@ -96,7 +96,13 @@ it('prepares canonical grants for a separate workspace', async () => {
 	}).toStrictEqual({
 		entry: supervisor,
 		workspace: '/workspace',
-		readonlyPaths: ['/tools', '/bin/dash', '/bin/bash'],
+		readonlyPaths: [
+			'/tools',
+			'/bin/dash',
+			'/bin/bash',
+			'/runtime/node/bin/node',
+			'/runtime/pkg/dist/tools'
+		],
 		configuredPaths: ['/tools', '/bin/dash', '/bin/bash'],
 		shells: [
 			['sh', '/bin/dash'],

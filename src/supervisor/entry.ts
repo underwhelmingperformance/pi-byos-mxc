@@ -15,6 +15,8 @@ import { SYSTEM_PATH, transportCommand } from '../shell.js';
 
 import { isParentMessage } from './parent-message.js';
 import type { ChildMessage, StartMessage } from './protocol.js';
+import { offlineProfile } from './seatbelt.js';
+import { ExitObserver } from './status.js';
 
 class MxcSupervisor {
 	#job: StartMessage | undefined;
@@ -55,10 +57,23 @@ class MxcSupervisor {
 	}
 
 	async #execute(request: StartMessage): Promise<void> {
+		let observer: ExitObserver | undefined;
+
 		try {
+			const isOffline = request.network === 'denied';
+
+			if (isOffline && request.backend !== 'seatbelt') {
+				throw new Error('Strict networking requires Seatbelt.');
+			}
+
 			this.#target = await spawn(
 				{
-					containment: { type: request.backend },
+					containment: isOffline
+						? {
+								type: 'seatbelt',
+								config: { profileOverride: offlineProfile(request) }
+							}
+						: { type: request.backend },
 					command: transportCommand({
 						gate: request.id,
 						shell: request.shell,
@@ -71,7 +86,9 @@ class MxcSupervisor {
 						readonlyPaths: request.readonlyPaths,
 						deniedPaths: request.deniedPaths
 					},
-					network: networkPolicy(request.network),
+					network: networkPolicy(
+						request.network === 'denied' ? 'ip-denied' : request.network
+					),
 					environment: { PATH: SYSTEM_PATH },
 					inheritDefaultEnvironment: false,
 					ui: { disable: true }
@@ -97,6 +114,12 @@ class MxcSupervisor {
 			void output.catch(() => {
 				this.#stop();
 			});
+
+			if (isOffline) {
+				observer = new ExitObserver(this.#target.id);
+				await observer.ready();
+			}
+
 			await this.#send({
 				version: 1,
 				kind: 'started',
@@ -110,6 +133,8 @@ class MxcSupervisor {
 
 			const result = await this.#target.wait();
 
+			const status = await observer?.status();
+
 			await output;
 
 			if (this.#hasStopFailure) {
@@ -120,7 +145,8 @@ class MxcSupervisor {
 				version: 1,
 				kind: 'completed',
 				id: request.id,
-				exitCode: result.exitCode,
+				exitCode: status ?? result.exitCode,
+				...(status !== undefined && status < 0 && { signalNumber: -status }),
 				warnings: Math.min(64, this.#target.warnings.length)
 			});
 		} catch {
@@ -132,6 +158,7 @@ class MxcSupervisor {
 				process.exitCode = 1;
 			}
 		} finally {
+			observer?.close();
 			this.#target?.dispose();
 
 			if (process.connected) {
@@ -188,7 +215,21 @@ class MxcSupervisor {
 		}
 
 		this.#isReleased = true;
-		this.#input?.end(`${message.id}\n`);
+
+		if (this.#input === undefined) {
+			return;
+		}
+
+		this.#input.write(`${message.id}\n`);
+		void pipeline(process.stdin, this.#input).catch((error: unknown) => {
+			if (!(
+				error instanceof Error &&
+				'code' in error &&
+				(error.code === 'EPIPE' || error.code === 'ERR_STREAM_PREMATURE_CLOSE')
+			)) {
+				this.#stop();
+			}
+		});
 	}
 
 	start(): void {
