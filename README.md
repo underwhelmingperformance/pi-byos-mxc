@@ -10,13 +10,14 @@ machine. The **workspace** is the directory where you start Pi. You and Pi see
 the same files, so a successful edit shows up immediately in your editor or
 `git diff`. On Apple Silicon the sandbox runs natively on macOS.
 
-![Pi updates a changelog, gets a permission error editing .envrc, then reads back its original value.][demo]
+[![Pi reads back the original value in .envrc after MXC blocks an edit.][preview]][demo]
 
-The recording uses a scripted model and a real MXC sandbox. Pi edits the release
-notes, then shows why a second edit failed. [Recording instructions and VHS
-tape][replay].
+[Download the 18-second demo (MP4)][demo]. A scripted model asks Pi to update
+the release notes and then change `.envrc`. The real MXC sandbox allows the
+first edit and blocks the second. [Recording instructions and VHS tape][replay].
 
-[demo]: docs/images/workspace.gif
+[preview]: docs/images/workspace.png
+[demo]: docs/images/workspace.mp4?raw=true
 [replay]: demo
 
 ## Get started

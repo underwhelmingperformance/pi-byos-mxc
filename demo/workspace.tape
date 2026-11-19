@@ -1,5 +1,5 @@
 # Run from the built checkout on Apple Silicon: vhs demo/workspace.tape
-Output docs/images/workspace.gif
+Output docs/images/workspace.mp4
 Require node
 Require fd
 Require rg
