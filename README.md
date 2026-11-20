@@ -1,9 +1,9 @@
 # Experimental MXC provider for Pi
 
 Loading this extension activates Microsoft MXC for BYOS consumers in Pi. On
-Apple Silicon, the Codex auto-review preset can investigate a live workspace
-through a separate read-only backend with denied networking. Loading the package
-also runs Pi's active shell, file and search tools through BYOS.
+Apple Silicon, reviewers can inspect a private copy of the proposed command's
+workspace with networking denied. Pi's active shell, file and search tools
+continue to use the live checkout.
 
 Termination covers the direct process and its original supervised POSIX process
 group. A child that changes group or session can continue modifying permitted
@@ -56,12 +56,12 @@ The provider also does not stop:
 
 The tested baseline is Node **24.21.0** and **24.22.2**, pnpm **12.15.0**, Pi
 **1.5.0**, TypeBox **1.3.27** and MXC **1.0.1**. The manifest pins the BYOS SDK
-to commit `4f7a56b0c3db3a7ec94553d83b125d5f59517e39`, the same revision as the
-[auto-review fork][auto-review]. A source build requires a C compiler and the
+to [BYOS revision `797305b`][byos-pin]. Auto-review needs a version that uses
+the BYOS v2 shell review route. A source build requires a C compiler and the
 target platform's headers. Build the archive on the target OS and architecture.
 
-[auto-review]:
-  https://github.com/iainlane/pi-packages/commit/0b2abd69dfd8eadf7750a6267fb843c95d63667d
+[byos-pin]:
+  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/commit/797305b52b2c32571560c7d83e243418e4460113
 
 Linux requires unprivileged user namespaces and Bubblewrap 0.5.0 or newer. Open
 egress needs additional slirp, iproute2, util-linux and firewall prerequisites.
@@ -103,10 +103,22 @@ under their original names. Pi 1.5 enables `read`, `bash`, `edit` and `write` by
 default. If you enable `ls`, `find` or `grep`, those calls also use MXC. Your
 existing tool selection applies.
 
-With the permission system and auto-review loaded, the reviewer's default
-`codex` preset discovers MXC through BYOS and requests a read-only workspace,
-system and runtime reads, and denied networking. A personal policy requiring
-`workspace-only` prevents MXC acquisition. Linux also refuses this request.
+On Apple Silicon, BYOS extensions can copy the host workspace or an existing MXC
+sandbox. By default the copy is read-only, can read system and runtime files,
+and has networking disabled. A reviewer can use the same copy for several tool
+calls while you continue editing. A review that requires workspace-only reads
+cannot use MXC.
+
+An extension can request a writable copy with
+`sandbox.copy({ needs: ['workspace-writes'] })` when the session permits writes.
+Edits stay in that copy. Copying it again includes those edits. Close each copy
+when finished to release its files and scratch directory.
+
+MXC clones files on the same filesystem as its temporary directory. The
+workspace must support file cloning and fit within 512 MiB, 100,000 entries and
+128 directory levels. MXC rejects a changing source, a nested mount, special
+files, multiply linked files, immutable files, and links that cannot resolve
+inside the copy.
 
 The shell integration includes user-shell commands and the configured
 outside-execution approval flow. The six file and search tools execute Pi's

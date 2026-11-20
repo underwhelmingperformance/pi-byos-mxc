@@ -5,6 +5,7 @@ import {
 	mkdtemp,
 	readFile,
 	realpath,
+	rename,
 	rm,
 	stat,
 	writeFile
@@ -13,7 +14,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import type { SandboxProvider } from 'pi-bring-your-own-sandbox/api';
+import type {
+	ProcessRequest,
+	SandboxProvider
+} from 'pi-bring-your-own-sandbox/api';
 import { defineSandboxProviderTests } from 'pi-bring-your-own-sandbox/testing';
 import { assert, expect } from 'vitest';
 
@@ -102,7 +106,51 @@ async function verifyStopped(workspace: string): Promise<void> {
 	await verifyDescendantStopped(workspace);
 }
 
+function shell(command: string): ProcessRequest {
+	return {
+		kind: 'shell',
+		dialect: 'sh',
+		command
+	};
+}
+
+function contents(bytes: Uint8Array): string {
+	const octal = Array.from(
+		bytes,
+		(byte) => '\\0' + byte.toString(8).padStart(3, '0')
+	).join('');
+
+	return `printf '%b' '${octal}'`;
+}
+
+function visibilityProbe(workspace: string) {
+	const target = path.join(workspace, 'seeded/data');
+	const replacement = path.join(workspace, 'replacement');
+
+	return {
+		targetPath: target,
+		findTarget: path.join(workspace, 'seeded/new-file'),
+		readSource: () => readFile(target),
+		async replaceSource(bytes: Uint8Array) {
+			await writeFile(replacement, bytes);
+			await rename(replacement, target);
+		},
+		readTarget: shell('cat seeded/data'),
+		writeTarget: (bytes: Uint8Array) =>
+			shell(`${contents(bytes)} > staged && mv staged seeded/data`),
+		stageSave: (bytes: Uint8Array) => ({
+			prepare: shell(`${contents(bytes)} > staged`),
+			commit: shell('mv staged seeded/data')
+		}),
+		waitForReplacement: (bytes: Uint8Array) =>
+			shell(
+				`${contents(bytes)} > expected && cp expected seeded/data && printf ready && while cmp -s expected seeded/data; do sleep 0.1; done && cat seeded/data`
+			)
+	};
+}
+
 defineSandboxProviderTests({
+	workspaceVisibility: 'shared',
 	label: `MXC ${process.platform}/${process.arch} shared workspace`,
 	provider: testedProvider,
 	timeoutMs: 20_000,
@@ -166,6 +214,7 @@ defineSandboxProviderTests({
 
 		return {
 			configuration: {},
+			visibility: visibilityProbe(workspace),
 			find: [
 				{
 					request: { path: searchRoot, pattern: '*.txt', limit: 2 },

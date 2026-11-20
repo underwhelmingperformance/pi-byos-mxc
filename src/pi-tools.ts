@@ -216,8 +216,11 @@ class PiTools {
 	}
 }
 
-export default function mxcTools(pi: ExtensionAPI): void {
-	shellTools(pi);
+export default function mxcTools(
+	pi: ExtensionAPI,
+	extensionPath = fileURLToPath(import.meta.url)
+): void {
+	shellTools(pi, extensionPath);
 
 	const tools = new PiTools(pi);
 
