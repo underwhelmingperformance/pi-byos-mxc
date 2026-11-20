@@ -81,7 +81,8 @@ it('uses real shell consumers and releases the old allocation on session replace
 											'files.list',
 											'files.write',
 											'search.find',
-											'search.grep'
+											'search.grep',
+											...(process.platform === 'darwin' ? ['copy'] : [])
 										],
 										processKinds: ['shell'],
 										shells: ['sh', 'bash'],
@@ -173,7 +174,8 @@ it('retains a valid default shell when the Bash probe fails', async () => {
 											'files.list',
 											'files.write',
 											'search.find',
-											'search.grep'
+											'search.grep',
+											...(process.platform === 'darwin' ? ['copy'] : [])
 										],
 										processKinds: ['shell'],
 										shells: ['sh'],

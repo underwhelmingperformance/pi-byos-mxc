@@ -13,12 +13,14 @@ import { provider } from './provider.js';
 
 it('advertises process-group shell execution and delegated policy defaults', () => {
 	expect({
+		copy: typeof provider.copy,
 		id: provider.id,
 		protocolVersion: provider.protocolVersion,
 		capabilities: provider.capabilities,
 		policies: provider.policies,
 		defaultPolicy: provider.defaultPolicy
 	}).toStrictEqual({
+		copy: process.platform === 'darwin' ? 'function' : 'undefined',
 		id: 'mxc',
 		protocolVersion: 1,
 		capabilities: {
@@ -29,7 +31,8 @@ it('advertises process-group shell execution and delegated policy defaults', () 
 				'files.list',
 				'files.write',
 				'search.find',
-				'search.grep'
+				'search.grep',
+				...(process.platform === 'darwin' ? ['copy'] : [])
 			],
 			processKinds: ['shell'],
 			shells: ['sh', 'bash'],
@@ -37,6 +40,7 @@ it('advertises process-group shell execution and delegated policy defaults', () 
 			terminationScope: 'process-group'
 		},
 		policies: {
+			workspaceRelationship: ['shared'],
 			workspaceAccess: ['read-write', 'read-only'],
 			filesystemScope: ['provider-default', 'system-read-only'],
 			networkAccess:

@@ -4,6 +4,18 @@ import type { SandboxPolicy } from 'pi-bring-your-own-sandbox/api';
 import type { MxcConfig } from './config.js';
 import { UnsupportedBackendError } from './errors.js';
 
+export const canCopy = process.platform === 'darwin';
+export const operations = Object.freeze([
+	'exec',
+	'workspace.protection',
+	'files.read',
+	'files.list',
+	'files.write',
+	'search.find',
+	'search.grep',
+	...(canCopy ? (['copy'] as const) : [])
+] as const);
+
 type NativeBackend = Exclude<MxcConfig['backend'], 'auto'>;
 
 export const EFFECTIVE_POLICY: SandboxPolicy = Object.freeze({

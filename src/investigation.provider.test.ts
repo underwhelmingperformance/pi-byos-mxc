@@ -13,11 +13,7 @@ import { nodeCommand, withNativeSandbox } from './fixtures/native-sandbox.js';
 
 const execute = promisify(execFile);
 const requirements: SandboxAcquireOptions = {
-	policy: {
-		workspaceAccess: 'read-only',
-		filesystemScope: 'system-read-only',
-		networkAccess: 'denied'
-	},
+	guarantees: ['no-workspace-writes', 'no-host-user-data', 'no-network'],
 	capabilities: ['exec', 'files.read'],
 	processKinds: ['shell'],
 	shells: ['sh'],
@@ -149,7 +145,10 @@ it
 				{
 					requirements: {
 						...requirements,
-						policy: { ...requirements.policy, workspaceAccess }
+						...(workspaceAccess === 'read-write' && {
+							guarantees: ['no-host-user-data', 'no-network'],
+							needs: ['workspace-writes']
+						})
 					}
 				}
 			);
