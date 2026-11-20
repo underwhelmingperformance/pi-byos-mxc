@@ -47,8 +47,12 @@ jobs:
       - run: pnpm check
 
   provider:
-    name: Native macOS provider
-    runs-on: macos-15
+    name: Native provider (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,6 +67,12 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      - run: brew install ripgrep fd
+      - if: runner.os == 'macOS'
+        run: brew install ripgrep fd
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap slirp4netns ripgrep fd-find
+          bwrap --unshare-user --unshare-pid --unshare-net --ro-bind / / -- /bin/true
       - run: pnpm test:provider
       - run: pnpm pack --pack-destination "$RUNNER_TEMP"
