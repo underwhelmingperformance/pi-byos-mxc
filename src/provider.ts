@@ -15,7 +15,9 @@ export const provider: SandboxProvider<MxcConfig> = {
 			'workspace.protection',
 			'files.read',
 			'files.list',
-			'files.write'
+			'files.write',
+			'search.find',
+			'search.grep'
 		],
 		processKinds: ['shell'],
 		shells: ['sh', 'bash'],
