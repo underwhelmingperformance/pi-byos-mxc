@@ -135,6 +135,37 @@ defineSandboxProviderTests({
 		await mkdir(seeded);
 		await writeFile(path.join(seeded, 'data'), data);
 
+		const searchRoot = path.join(workspace, 'search');
+
+		await mkdir(searchRoot);
+		await writeFile(
+			path.join(searchRoot, 'notes.txt'),
+			'first\nnEedle.\nlast\n'
+		);
+		await writeFile(path.join(searchRoot, 'other.txt'), 'NEEDLE.\n');
+
+		const first = {
+			path: 'notes.txt',
+			line: 2,
+			text: 'nEedle.',
+			before: ['first'],
+			after: ['last']
+		};
+		const second = {
+			path: 'other.txt',
+			line: 1,
+			text: 'NEEDLE.',
+			before: [],
+			after: []
+		};
+		const query = {
+			path: searchRoot,
+			pattern: 'needle.',
+			literal: true,
+			ignoreCase: true,
+			glob: '*.txt',
+			context: 1
+		};
 		const metadata = await stat(seeded);
 		const directory = path.join(workspace, 'new', 'nested');
 		const destination = path.join(directory, 'file');
@@ -144,6 +175,26 @@ defineSandboxProviderTests({
 
 		return {
 			configuration: {},
+			find: [
+				{
+					request: { path: searchRoot, pattern: '*.txt', limit: 2 },
+					result: { paths: ['notes.txt', 'other.txt'], truncated: false }
+				},
+				{
+					request: { path: searchRoot, pattern: '*.txt', limit: 1 },
+					result: { paths: ['notes.txt'], truncated: true }
+				}
+			],
+			grep: [
+				{
+					request: { ...query, limit: 2 },
+					result: { matches: [first, second], truncated: false }
+				},
+				{
+					request: { ...query, limit: 1 },
+					result: { matches: [first], truncated: true }
+				}
+			],
 			read: {
 				path: path.join(seeded, 'data'),
 				bytes: data,
