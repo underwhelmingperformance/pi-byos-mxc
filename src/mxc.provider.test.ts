@@ -19,6 +19,10 @@ import { assert, expect } from 'vitest';
 
 import { MxcBackend } from './backend.js';
 import type { MxcConfig } from './config.js';
+import {
+	startDescendant,
+	verifyDescendantStopped
+} from './fixtures/descendant-lock.js';
 import { EFFECTIVE_POLICY } from './policy.js';
 import { provider } from './provider.js';
 import { prepareRuntime } from './runtime.js';
@@ -95,20 +99,7 @@ async function verifyOwnedProcesses(workspace: string): Promise<void> {
 async function verifyStopped(workspace: string): Promise<void> {
 	await verifyOwnedProcesses(workspace);
 
-	const saved = await readFile(path.join(workspace, 'descendant.pid'), 'utf8');
-	const id = saved.trim();
-
-	try {
-		const result = await execute('/bin/ps', ['-p', id, '-o', 'stat='], {
-			timeout: 1000
-		});
-
-		expect(result.stdout.trimStart().startsWith('Z')).toBe(true);
-	} catch (error) {
-		if (!(error instanceof Error && 'code' in error && error.code === 1)) {
-			throw error;
-		}
-	}
+	await verifyDescendantStopped(workspace);
 }
 
 defineSandboxProviderTests({
@@ -220,8 +211,7 @@ defineSandboxProviderTests({
 				request: {
 					kind: 'shell',
 					dialect: 'sh',
-					command:
-						'sleep 5 & child=$!; printf "%s" "$child" > descendant.pid; printf ready; wait "$child"'
+					command: `${startDescendant('')}; printf ready; wait "$child"`
 				},
 				ready: new TextEncoder().encode('ready'),
 				verifyStopped: () => verifyStopped(workspace)
