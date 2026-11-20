@@ -103,10 +103,18 @@ under their original names. Pi 1.5 enables `read`, `bash`, `edit` and `write` by
 default. If you enable `ls`, `find` or `grep`, those calls also use MXC. Your
 existing tool selection applies.
 
-With the permission system and auto-review loaded, the reviewer's default
-`codex` preset discovers MXC through BYOS and requests a read-only workspace,
-system and runtime reads, and denied networking. A personal policy requiring
-`workspace-only` prevents MXC acquisition. Linux also refuses this request.
+On Apple Silicon, a compatible auto-review broker can give the `codex` reviewer
+a fresh, read-only copy of the proposed command's workspace. Edits from your
+editor stay visible to ordinary Pi tools and appear in the next review. The
+reviewer must explicitly accept read-only access to system and runtime files.
+Networking is denied. A review that requires `workspace-only` reads, or cannot
+acquire a snapshot, uses the transcript alone.
+
+MXC clones files on the same filesystem as its temporary directory. The
+workspace must support file cloning and fit within 512 MiB, 100,000 entries and
+128 directory levels. MXC rejects a changing source, a nested mount, special
+files, multiply linked files, immutable files, and links that cannot resolve
+inside the copy. Each review releases its own copy when it finishes.
 
 The shell integration includes user-shell commands and the configured
 outside-execution approval flow. The six file and search tools execute Pi's

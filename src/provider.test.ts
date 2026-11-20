@@ -37,6 +37,7 @@ it('advertises process-group shell execution and delegated policy defaults', () 
 			terminationScope: 'process-group'
 		},
 		policies: {
+			workspaceRelationship: ['shared'],
 			workspaceAccess: ['read-write', 'read-only'],
 			filesystemScope: ['provider-default', 'system-read-only'],
 			networkAccess:

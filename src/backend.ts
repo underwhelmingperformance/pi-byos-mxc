@@ -25,6 +25,7 @@ import {
 	SandboxPermissionDeniedError,
 	SandboxSessionClosingError,
 	SandboxStartupError,
+	StaleSandboxHandleError,
 	UnsupportedSandboxCapabilityError,
 	UnsupportedSandboxPolicyError
 } from 'pi-bring-your-own-sandbox/api';
@@ -42,6 +43,8 @@ import { EFFECTIVE_POLICY } from './policy.js';
 import type { Protection } from './protection.js';
 import { planProtection } from './protection.js';
 import { RecoveryStore } from './recovery.js';
+import type { ReviewSource } from './review-snapshot.js';
+import { copyReviewWorkspace } from './review-snapshot.js';
 import type { MxcRuntime } from './runtime.js';
 import { prepareRuntime } from './runtime.js';
 import { assertSystemGrants, SYSTEM_ROOTS } from './scope.js';
@@ -109,7 +112,8 @@ function describePolicy(
 	runtime: MxcRuntime & { readonly protection: Protection },
 	policy: SandboxPolicy,
 	network: MxcConfig['network'],
-	platform: NodeJS.Platform
+	platform: NodeJS.Platform,
+	relationship: 'shared' | 'copied'
 ): string {
 	const isSeatbelt = runtime.backend === 'seatbelt';
 	const protectedEntries = [
@@ -127,7 +131,7 @@ function describePolicy(
 			: 'Baseline host system reads plus configured read-only grants.';
 
 	return [
-		`MXC ${runtime.backend}; ${policy.workspaceAccess === 'read-write' ? 'writable' : 'read-only'} shared workspace and private writable scratch.`,
+		`MXC ${runtime.backend}; ${policy.workspaceAccess === 'read-write' ? 'writable' : 'read-only'} ${relationship} workspace and private writable scratch.`,
 		filesystem,
 		...(protectedEntries.length > 0
 			? [
@@ -181,19 +185,32 @@ async function workingDirectory(
 	throw new SandboxPathNotFoundError(identity);
 }
 
+const liveWorkspaces = new Map<
+	string,
+	{ readonly workspace: string; readonly generationId: string }
+>();
+
 export class MxcBackend implements SandboxBackend {
 	static async open(
 		request: SandboxOpenRequest<MxcConfig>,
 		context: SandboxOpenContext,
-		overrides: Partial<BackendDependencies> = {}
+		overrides: Partial<BackendDependencies> = {},
+		source?: ReviewSource
 	): Promise<SandboxBackend> {
 		const dependencies = { ...DEFAULT_DEPENDENCIES, ...overrides };
+		const relationship = source === undefined ? 'shared' : 'copied';
 		let store: RecoveryStore | undefined;
 
 		context.reportRecovery({ kind: 'none' });
 
 		try {
 			if (
+				('workspaceRelationship' in request.policy &&
+					request.policy.workspaceRelationship !== relationship) ||
+				(relationship === 'copied' &&
+					(request.policy.workspaceAccess !== 'read-only' ||
+						request.policy.filesystemScope !== 'system-read-only' ||
+						request.policy.networkAccess !== 'denied')) ||
 				request.policy.filesystemScope === 'workspace-only' ||
 				(request.policy.networkAccess === 'denied' &&
 					dependencies.host.environment.platform !== 'darwin')
@@ -209,6 +226,21 @@ export class MxcBackend implements SandboxBackend {
 				request.configuration,
 				context
 			);
+
+			if (source?.kind === 'sandbox') {
+				const live = liveWorkspaces.get(source.backendId);
+
+				if (
+					source.providerId !== 'mxc' ||
+					live?.generationId !== source.generationId ||
+					live.workspace !== runtime.workspace
+				) {
+					throw new StaleSandboxHandleError({
+						operation: 'open',
+						providerId: 'mxc'
+					});
+				}
+			}
 
 			if (request.policy.filesystemScope === 'system-read-only') {
 				assertSystemGrants(
@@ -231,11 +263,21 @@ export class MxcBackend implements SandboxBackend {
 			);
 			assertDisjointPaths(store.scratch, runtime.readonlyPaths);
 
+			const workspace =
+				relationship === 'copied'
+					? await copyReviewWorkspace(
+							runtime.entry,
+							runtime.workspace,
+							store.root,
+							context
+						)
+					: runtime.workspace;
 			const backend = new MxcBackend(
 				request,
-				{ ...runtime, protection },
+				{ ...runtime, workspace, protection },
 				store,
-				dependencies
+				dependencies,
+				relationship
 			);
 			const probeContext: BackendProcessContext = {
 				...context,
@@ -286,6 +328,13 @@ export class MxcBackend implements SandboxBackend {
 
 			if (context.signal.aborted) {
 				throw new SandboxStartupError({ operation: 'open', providerId: 'mxc' });
+			}
+
+			if (source === undefined) {
+				liveWorkspaces.set(backend.id, {
+					workspace: runtime.workspace,
+					generationId: request.generationId
+				});
 			}
 
 			return backend;
@@ -374,7 +423,8 @@ export class MxcBackend implements SandboxBackend {
 		request: SandboxOpenRequest<MxcConfig>,
 		runtime: MxcRuntime & { readonly protection: Protection },
 		store: RecoveryStore,
-		dependencies: BackendDependencies
+		dependencies: BackendDependencies,
+		relationship: 'shared' | 'copied'
 	) {
 		this.#host = dependencies.host;
 		this.#createJob = dependencies.createJob;
@@ -393,6 +443,9 @@ export class MxcBackend implements SandboxBackend {
 
 		this.policy = Object.freeze({
 			...EFFECTIVE_POLICY,
+			...('workspaceRelationship' in request.policy && {
+				workspaceRelationship: relationship
+			}),
 			workspaceAccess: request.policy.workspaceAccess,
 			filesystemScope: request.policy.filesystemScope,
 			networkAccess: request.policy.networkAccess,
@@ -405,12 +458,15 @@ export class MxcBackend implements SandboxBackend {
 		this.workspace = Object.freeze({
 			root: runtime.workspace,
 			pathFlavor: 'posix',
-			relationship: 'shared',
+			relationship,
 			home: store.scratch,
 			defaultShell: 'sh',
-			description: isWritable
-				? 'Shared host workspace; changes persist. Private home/scratch lasts until generation disposal.'
-				: 'Shared host workspace, read-only inside the sandbox; host changes are visible. Private writable home/scratch lasts until generation disposal.'
+			description:
+				relationship === 'copied'
+					? 'Private read-only copy for one review.'
+					: isWritable
+						? 'Shared host workspace; changes persist. Private home/scratch lasts until generation disposal.'
+						: 'Shared host workspace, read-only inside the sandbox; host changes are visible. Private writable home/scratch lasts until generation disposal.'
 		});
 		this.recovery = store.recovery;
 		this.#grants = isWritable
@@ -460,7 +516,8 @@ export class MxcBackend implements SandboxBackend {
 			runtime,
 			this.policy,
 			request.configuration.network,
-			dependencies.host.environment.platform
+			dependencies.host.environment.platform,
+			relationship
 		);
 	}
 
@@ -685,6 +742,8 @@ export class MxcBackend implements SandboxBackend {
 	}
 
 	dispose(context: SandboxOperationContext): Promise<void> {
+		liveWorkspaces.delete(this.id);
+
 		if (this.#disposal !== undefined) {
 			return this.#disposal;
 		}
