@@ -79,7 +79,9 @@ it('uses real shell consumers and releases the old allocation on session replace
 											'workspace.protection',
 											'files.read',
 											'files.list',
-											'files.write'
+											'files.write',
+											'search.find',
+											'search.grep'
 										],
 										processKinds: ['shell'],
 										shells: ['sh', 'bash'],
@@ -169,7 +171,9 @@ it('retains a valid default shell when the Bash probe fails', async () => {
 											'workspace.protection',
 											'files.read',
 											'files.list',
-											'files.write'
+											'files.write',
+											'search.find',
+											'search.grep'
 										],
 										processKinds: ['shell'],
 										shells: ['sh'],

@@ -1,4 +1,4 @@
-import { readdir, readFile, realpath } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -13,42 +13,19 @@ import { quote } from './shell.js';
 
 const policy = { ...EFFECTIVE_POLICY, filesystemScope: 'system-read-only' };
 
-async function homeFile(): Promise<string | undefined> {
-	const entries = await readdir(homedir(), { withFileTypes: true });
+it('reads system files but cannot discover or read a private home entry', async () => {
+	const directory = await mkdtemp(path.join(homedir(), '.mxc-test-'));
+	const file = path.join(directory, 'canary');
 
-	for (const entry of entries) {
-		if (!entry.isFile()) {
-			continue;
-		}
-
-		const filename = path.join(homedir(), entry.name);
-
-		try {
-			await readFile(filename);
-
-			return filename;
-		} catch {
-			continue;
-		}
-	}
-
-	return undefined;
-}
-
-const probe = await homeFile();
-
-it.skipIf(probe === undefined)(
-	'reads system files but not host home files',
-	async () => {
-		const target = quote(probe ?? '');
-
+	try {
+		await writeFile(file, 'private');
 		await withNativeSandbox(
 			{},
 			async (sandbox) => {
 				const result = await sandbox.exec({
 					kind: 'shell',
 					dialect: 'sh',
-					command: `cat /etc/hosts >/dev/null && printf system; cat ${target} >/dev/null 2>&1 && printf home; ls ${quote(homedir())} >/dev/null 2>&1 && printf listing; true`
+					command: `cat /etc/hosts >/dev/null && printf system; cat ${quote(file)} 2>/dev/null; ls -A ${quote(directory)} 2>/dev/null; ls -A ${quote(homedir())} 2>/dev/null | grep -Fx ${quote(path.basename(directory))}; true`
 				});
 
 				expect({
@@ -58,8 +35,10 @@ it.skipIf(probe === undefined)(
 			},
 			{ policy }
 		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
 	}
-);
+});
 
 it('rejects a configured grant in the host home directory', async () => {
 	await withNativeSandbox(

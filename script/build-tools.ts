@@ -25,6 +25,7 @@ await mkdir(destination, { recursive: true });
 const build = await rolldown({
 	input: {
 		worker: 'script/tool-worker.ts',
+		search: 'script/search-worker.ts',
 		'image-resize-worker': path.join(root, 'utils/image-resize-worker.js')
 	},
 	platform: 'node',
@@ -89,6 +90,13 @@ await cp('script/LICENSE-pi', path.join(destination, 'LICENSE-pi'));
 await cp(
 	path.join(requirePi.resolve('diff/package.json'), '../LICENSE'),
 	path.join(destination, 'LICENSE-diff')
+);
+
+const re2jsRoot = fileURLToPath(new URL('..', import.meta.resolve('re2js')));
+
+await cp(
+	path.join(re2jsRoot, 'LICENSE'),
+	path.join(destination, 'LICENSE-re2js')
 );
 
 const typeboxEntry = fileURLToPath(import.meta.resolve('typebox'));

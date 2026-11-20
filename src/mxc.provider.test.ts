@@ -19,6 +19,10 @@ import { assert, expect } from 'vitest';
 
 import { MxcBackend } from './backend.js';
 import type { MxcConfig } from './config.js';
+import {
+	startDescendant,
+	verifyDescendantStopped
+} from './fixtures/descendant-lock.js';
 import { EFFECTIVE_POLICY } from './policy.js';
 import { provider } from './provider.js';
 import { prepareRuntime } from './runtime.js';
@@ -95,20 +99,7 @@ async function verifyOwnedProcesses(workspace: string): Promise<void> {
 async function verifyStopped(workspace: string): Promise<void> {
 	await verifyOwnedProcesses(workspace);
 
-	const saved = await readFile(path.join(workspace, 'descendant.pid'), 'utf8');
-	const id = saved.trim();
-
-	try {
-		const result = await execute('/bin/ps', ['-p', id, '-o', 'stat='], {
-			timeout: 1000
-		});
-
-		expect(result.stdout.trimStart().startsWith('Z')).toBe(true);
-	} catch (error) {
-		if (!(error instanceof Error && 'code' in error && error.code === 1)) {
-			throw error;
-		}
-	}
+	await verifyDescendantStopped(workspace);
 }
 
 defineSandboxProviderTests({
@@ -135,6 +126,37 @@ defineSandboxProviderTests({
 		await mkdir(seeded);
 		await writeFile(path.join(seeded, 'data'), data);
 
+		const searchRoot = path.join(workspace, 'search');
+
+		await mkdir(searchRoot);
+		await writeFile(
+			path.join(searchRoot, 'notes.txt'),
+			'first\nnEedle.\nlast\n'
+		);
+		await writeFile(path.join(searchRoot, 'other.txt'), 'NEEDLE.\n');
+
+		const first = {
+			path: 'notes.txt',
+			line: 2,
+			text: 'nEedle.',
+			before: ['first'],
+			after: ['last']
+		};
+		const second = {
+			path: 'other.txt',
+			line: 1,
+			text: 'NEEDLE.',
+			before: [],
+			after: []
+		};
+		const query = {
+			path: searchRoot,
+			pattern: 'needle.',
+			literal: true,
+			ignoreCase: true,
+			glob: '*.txt',
+			context: 1
+		};
 		const metadata = await stat(seeded);
 		const directory = path.join(workspace, 'new', 'nested');
 		const destination = path.join(directory, 'file');
@@ -144,6 +166,26 @@ defineSandboxProviderTests({
 
 		return {
 			configuration: {},
+			find: [
+				{
+					request: { path: searchRoot, pattern: '*.txt', limit: 2 },
+					result: { paths: ['notes.txt', 'other.txt'], truncated: false }
+				},
+				{
+					request: { path: searchRoot, pattern: '*.txt', limit: 1 },
+					result: { paths: ['notes.txt'], truncated: true }
+				}
+			],
+			grep: [
+				{
+					request: { ...query, limit: 2 },
+					result: { matches: [first, second], truncated: false }
+				},
+				{
+					request: { ...query, limit: 1 },
+					result: { matches: [first], truncated: true }
+				}
+			],
 			read: {
 				path: path.join(seeded, 'data'),
 				bytes: data,
@@ -169,8 +211,7 @@ defineSandboxProviderTests({
 				request: {
 					kind: 'shell',
 					dialect: 'sh',
-					command:
-						'sleep 5 & child=$!; printf "%s" "$child" > descendant.pid; printf ready; wait "$child"'
+					command: `${startDescendant('')}; printf ready; wait "$child"`
 				},
 				ready: new TextEncoder().encode('ready'),
 				verifyStopped: () => verifyStopped(workspace)

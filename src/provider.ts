@@ -1,11 +1,26 @@
-import type { SandboxProvider } from 'pi-bring-your-own-sandbox/api';
+import type {
+	SandboxOpenContext,
+	SandboxOpenRequest,
+	SandboxProvider
+} from 'pi-bring-your-own-sandbox/api';
 
 import { MxcBackend } from './backend.js';
 import type { MxcConfig } from './config.js';
 import { validateConfig } from './config.js';
 import { EFFECTIVE_POLICY } from './policy.js';
+import type { ReviewSource } from './review-snapshot.js';
 
-export const provider: SandboxProvider<MxcConfig> = {
+type MxcProvider = SandboxProvider<MxcConfig> & {
+	readonly policies: SandboxProvider<MxcConfig>['policies'] & {
+		readonly workspaceRelationship: readonly ['shared'];
+	};
+	readonly openReviewSnapshot?: (
+		request: SandboxOpenRequest<MxcConfig> & { readonly source: ReviewSource },
+		context: SandboxOpenContext
+	) => ReturnType<typeof MxcBackend.open>;
+};
+
+export const provider: MxcProvider = {
 	id: 'mxc',
 	label: 'Microsoft MXC (experimental)',
 	protocolVersion: 1,
@@ -15,7 +30,9 @@ export const provider: SandboxProvider<MxcConfig> = {
 			'workspace.protection',
 			'files.read',
 			'files.list',
-			'files.write'
+			'files.write',
+			'search.find',
+			'search.grep'
 		],
 		processKinds: ['shell'],
 		shells: ['sh', 'bash'],
@@ -23,6 +40,7 @@ export const provider: SandboxProvider<MxcConfig> = {
 		terminationScope: 'process-group'
 	},
 	policies: {
+		workspaceRelationship: ['shared'],
 		workspaceAccess: ['read-write', 'read-only'],
 		filesystemScope: ['provider-default', 'system-read-only'],
 		networkAccess:
@@ -32,5 +50,9 @@ export const provider: SandboxProvider<MxcConfig> = {
 	},
 	defaultPolicy: EFFECTIVE_POLICY,
 	validateConfig,
+	...(process.platform === 'darwin' && {
+		openReviewSnapshot: (request, context) =>
+			MxcBackend.open(request, context, {}, request.source)
+	}),
 	open: (request, context) => MxcBackend.open(request, context)
 };

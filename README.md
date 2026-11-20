@@ -103,10 +103,18 @@ under their original names. Pi 1.5 enables `read`, `bash`, `edit` and `write` by
 default. If you enable `ls`, `find` or `grep`, those calls also use MXC. Your
 existing tool selection applies.
 
-With the permission system and auto-review loaded, the reviewer's default
-`codex` preset discovers MXC through BYOS and requests a read-only workspace,
-system and runtime reads, and denied networking. A personal policy requiring
-`workspace-only` prevents MXC acquisition. Linux also refuses this request.
+On Apple Silicon, a compatible auto-review broker can give the `codex` reviewer
+a fresh, read-only copy of the proposed command's workspace. Edits from your
+editor stay visible to ordinary Pi tools and appear in the next review. The
+reviewer must explicitly accept read-only access to system and runtime files.
+Networking is denied. A review that requires `workspace-only` reads, or cannot
+acquire a snapshot, uses the transcript alone.
+
+MXC clones files on the same filesystem as its temporary directory. The
+workspace must support file cloning and fit within 512 MiB, 100,000 entries and
+128 directory levels. MXC rejects a changing source, a nested mount, special
+files, multiply linked files, immutable files, and links that cannot resolve
+inside the copy. Each review releases its own copy when it finishes.
 
 The shell integration includes user-shell commands and the configured
 outside-execution approval flow. The six file and search tools execute Pi's
@@ -246,6 +254,21 @@ loopback address, as with systemd-resolved's stub, the adapter adds no grant.
 MXC then points the sandbox at slirp's DNS forwarder, which forwards queries to
 the host's resolver. The [Linux resolver notes][linux-dns] describe the
 mechanism.
+
+### Search from other extensions
+
+BYOS consumers can request `search.find` and `search.grep`. Both run in the same
+sandbox as shell commands. Find returns relative paths in UTF-16 code unit
+order, with a trailing slash for directories. Patterns use Node's
+`path.matchesGlob` on the basename, or on the relative path when the pattern
+contains a slash. Searches skip `.git` and `node_modules`, include other hidden
+entries when the pattern matches, and ignore Git ignore files.
+
+Grep matches each UTF-8 line with a RE2 regular expression or a literal string.
+It skips binary files and files larger than 8 MiB. The limit counts matching
+lines. Both searches report truncation only when another result exists. A
+directory listing or grep response larger than the worker's 8 MiB budget causes
+the operation to fail.
 
 ### Network access
 
