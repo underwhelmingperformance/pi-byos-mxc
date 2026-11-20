@@ -1,13 +1,15 @@
-import { execFile } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 
 import { assert, expect, it } from 'vitest';
 
+import {
+	startDescendant,
+	verifyDescendantStopped
+} from './fixtures/descendant-lock.js';
 import { InjectedFailure } from './fixtures/errors.js';
 import { nodeCommand, withNativeSandbox } from './fixtures/native-sandbox.js';
 import { nodeReadonlyPaths } from './fixtures/node-runtime.js';
@@ -15,7 +17,6 @@ import { nodeReadonlyPaths } from './fixtures/node-runtime.js';
 const nodePaths = await nodeReadonlyPaths();
 
 const nodeConfig = { readonlyPaths: [...nodePaths] };
-const execute = promisify(execFile);
 
 it('drains binary output beyond the shared capture limit', async () => {
 	await withNativeSandbox(nodeConfig, async (sandbox) => {
@@ -80,27 +81,10 @@ it.each(['', '>/dev/null 2>&1'])(
 			await sandbox.exec({
 				kind: 'shell',
 				dialect: 'sh',
-				command: `sleep 5 ${redirection} & printf '%s' "$!" > descendant.pid; exit 0`
+				command: `${startDescendant(redirection)}; exit 0`
 			});
 
-			const saved = await readFile(
-				path.join(workspace, 'descendant.pid'),
-				'utf8'
-			);
-
-			try {
-				const result = await execute(
-					'/bin/ps',
-					['-p', saved.trim(), '-o', 'stat='],
-					{ timeout: 1000 }
-				);
-
-				expect(result.stdout.trimStart().startsWith('Z')).toBe(true);
-			} catch (error) {
-				if (!(error instanceof Error && 'code' in error && error.code === 1)) {
-					throw error;
-				}
-			}
+			await verifyDescendantStopped(workspace);
 		});
 	}
 );
