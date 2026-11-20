@@ -4,6 +4,7 @@ import type {
 	BackendFiles,
 	BackendProcessContext,
 	BackendProcessOutcome,
+	BackendSearch,
 	ProcessRequest,
 	RecoveryDescriptor,
 	SandboxBackend,
@@ -44,6 +45,7 @@ import { RecoveryStore } from './recovery.js';
 import type { MxcRuntime } from './runtime.js';
 import { prepareRuntime } from './runtime.js';
 import { assertSystemGrants, SYSTEM_ROOTS } from './scope.js';
+import { sandboxSearch } from './search.js';
 import { SYSTEM_PATH, targetEnvironment } from './shell.js';
 import type { JobOptions } from './supervisor/client.js';
 import { SupervisorJob } from './supervisor/client.js';
@@ -92,7 +94,9 @@ function capabilities(
 			'workspace.protection',
 			'files.read',
 			'files.list',
-			'files.write'
+			'files.write',
+			'search.find',
+			'search.grep'
 		] as const),
 		processKinds: Object.freeze(['shell'] as const),
 		shells: Object.freeze(shells.keys().toArray()),
@@ -362,6 +366,7 @@ export class MxcBackend implements SandboxBackend {
 	readonly workspace: SandboxWorkspace;
 	readonly policy: SandboxPolicy;
 	readonly files: BackendFiles;
+	readonly search: BackendSearch;
 	readonly policyDescription: string;
 	readonly recovery: RecoveryDescriptor;
 
@@ -435,6 +440,20 @@ export class MxcBackend implements SandboxBackend {
 				this.#run({ kind: 'shell', dialect: 'sh', command }, context, {
 					helper,
 					...(input !== undefined && { input })
+				})
+		);
+
+		const worker = path.resolve(
+			path.dirname(runtime.entry),
+			'../tools/search.js'
+		);
+
+		this.search = sandboxSearch(
+			this.#host.environment.execPath,
+			worker,
+			(command, context) =>
+				this.#run({ kind: 'shell', dialect: 'sh', command }, context, {
+					helper: worker
 				})
 		);
 		this.policyDescription = describePolicy(

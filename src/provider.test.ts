@@ -27,7 +27,9 @@ it('advertises process-group shell execution and delegated policy defaults', () 
 				'workspace.protection',
 				'files.read',
 				'files.list',
-				'files.write'
+				'files.write',
+				'search.find',
+				'search.grep'
 			],
 			processKinds: ['shell'],
 			shells: ['sh', 'bash'],
