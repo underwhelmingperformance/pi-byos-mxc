@@ -1,9 +1,10 @@
 # Experimental MXC provider for Pi
 
-Loading this extension activates Microsoft MXC for BYOS consumers in Pi. On
-Apple Silicon, reviewers can inspect a private copy of the proposed command's
-workspace with networking denied. Pi's active shell, file and search tools
-continue to use the live checkout.
+Loading this extension activates Microsoft MXC for BYOS in Pi. Pi's shell, file
+and search tools run inside MXC on the live checkout, so workspace writes appear
+on the host immediately. A shell command can use an outside destination only
+when the outside-execution approval flow allows it. On Apple Silicon, reviewers
+can inspect a private copy of the command's workspace with networking denied.
 
 Termination covers the direct process and its original supervised POSIX process
 group. A child that changes group or session can continue modifying permitted
