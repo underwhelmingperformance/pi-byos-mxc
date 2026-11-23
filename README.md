@@ -154,11 +154,26 @@ An extension can request a writable copy with
 Edits stay in that copy. Copying it again includes those edits. Close each copy
 when finished to release its files and scratch directory.
 
-MXC clones files on the same filesystem as its temporary directory. The
-workspace must support file cloning and fit within 512 MiB, 100,000 entries and
-128 directory levels. MXC rejects a changing source, a nested mount, special
-files, multiply linked files, immutable files, and links that cannot resolve
-inside the copy.
+A failed copy can produce the generic `MXC opening failed` startup diagnostic.
+MXC stops at the first copy error, and the diagnostic omits the helper's reason.
+Check symbolic links and the entry count first.
+
+- MXC rejects every absolute symbolic link, including one whose target is inside
+  the workspace. Examples include the `result` link from `nix build` and
+  `nix-direnv` links into `/nix/store` under `.direnv`. Replace absolute links
+  to targets inside the workspace with relative links that resolve inside the
+  copy. Remove links that point outside the workspace or have missing targets.
+- MXC allows at most 100,000 entries. It counts the workspace root and every
+  file, directory and link, including those in `.git` and `node_modules`. If a
+  dependency tree takes the workspace over the limit, remove generated files
+  that the project does not need. MXC cannot copy a workspace that still exceeds
+  the limit.
+
+The workspace must support file cloning and be on the same filesystem as MXC's
+temporary directory. MXC allows up to 512 MiB of regular file data and 128
+levels below the workspace root. It rejects nested mounts, special files,
+multiply linked regular files, immutable or append-only entries, and a source
+that changes during copying.
 
 The shell integration includes user-shell commands and the configured
 outside-execution approval flow. The six file and search tools execute Pi's
