@@ -127,6 +127,17 @@ example.
 For a single session, run `pi -e /trusted/pi-byos-mxc` from the target
 workspace. Pi loads extensions passed with `-e` before extensions from settings.
 
+To enable `/byos status` and `/byos providers`, add the absolute path to the
+diagnostics extension under `extensions` in the same `settings.json`. Pi loads
+the local package from its checkout, so use the path under
+`/trusted/pi-byos-mxc`.
+
+```json
+{
+  "extensions": ["/trusted/pi-byos-mxc/dist/diagnostics.js"]
+}
+```
+
 The package registers the provider and replaces the shell, file and search tools
 under their original names. Pi 1.5 enables `read`, `bash`, `edit` and `write` by
 default. If you enable `ls`, `find` or `grep`, those calls also use MXC. Your
@@ -153,7 +164,7 @@ The shell integration includes user-shell commands and the configured
 outside-execution approval flow. The six file and search tools execute Pi's
 implementations with the same filesystem and network policy as a sandbox shell.
 This includes read path resolution, image decoding, edit previews and the `rg`
-and `fd` subprocesses. Load `dist/diagnostics.js` for BYOS status.
+and `fd` subprocesses.
 
 ### Personal settings
 
