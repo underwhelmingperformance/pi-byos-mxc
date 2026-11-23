@@ -96,8 +96,36 @@ Register the built package once for your Pi sessions:
 pi install /trusted/pi-byos-mxc
 ```
 
-For a single session, use `pi -e /trusted/pi-byos-mxc` from the target
+Put MXC before every permission extension in `packages`. Pi runs handlers in
+extension load order, so MXC must record the pending shell call before a
+permission extension asks a reviewer to inspect a copy of its workspace. If the
+permission extension runs first, the reviewer continues without inspecting the
 workspace.
+
+`pi install` appends new entries to `packages` in `~/.pi/agent/settings.json`.
+If you installed a permission extension first, move the MXC entry above it in
+that file. `pi-permission-auto-review` needs to load before
+`pi-permission-system` so it can capture the complete tool input.
+
+```json
+{
+  "packages": [
+    "/trusted/pi-byos-mxc",
+    "npm:@mzwing/pi-permission-auto-review",
+    "npm:@gotgenes/pi-permission-system"
+  ]
+}
+```
+
+Packages in a project's `.pi/settings.json` load before personal packages.
+Extensions listed in `extensions` or discovered in an extensions directory load
+before any package. A permission extension loaded in any of these ways comes
+before a personal MXC package regardless of the order in the personal `packages`
+array. Install permission extensions as personal packages after MXC, as in the
+example.
+
+For a single session, run `pi -e /trusted/pi-byos-mxc` from the target
+workspace. Pi loads extensions passed with `-e` before extensions from settings.
 
 The package registers the provider and replaces the shell, file and search tools
 under their original names. Pi 1.5 enables `read`, `bash`, `edit` and `write` by
