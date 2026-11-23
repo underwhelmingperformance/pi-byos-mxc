@@ -143,16 +143,16 @@ under their original names. Pi 1.5 enables `read`, `bash`, `edit` and `write` by
 default. If you enable `ls`, `find` or `grep`, those calls also use MXC. Your
 existing tool selection applies.
 
-On Apple Silicon, BYOS extensions can copy the host workspace or an existing MXC
+On Apple Silicon, BYOS consumers can copy the host workspace or an existing MXC
 sandbox. By default the copy is read-only, can read system and runtime files,
 and has networking disabled. A reviewer can use the same copy for several tool
 calls while you continue editing. A review that requires workspace-only reads
 cannot use MXC.
 
-An extension can request a writable copy with
-`sandbox.copy({ needs: ['workspace-writes'] })` when the session permits writes.
-Edits stay in that copy. Copying it again includes those edits. Close each copy
-when finished to release its files and scratch directory.
+A consumer can request a writable copy with
+`sandbox.copy({ needs: ['workspace-writes'] })` if the configured policy allows
+workspace writes. Edits stay in that copy. Copying it again includes those
+edits. Close each copy when finished to release its files and scratch directory.
 
 A failed copy can produce the generic `MXC opening failed` startup diagnostic.
 MXC stops at the first copy error, and the diagnostic omits the helper's reason.
@@ -181,10 +181,12 @@ implementations with the same filesystem and network policy as a sandbox shell.
 This includes read path resolution, image decoding, edit previews and the `rg`
 and `fd` subprocesses.
 
-### Personal settings
+### Settings
 
-MXC reads `mxc-sandbox.json` from Pi's agent directory. To use a writable editor
-on macOS with system reads and denied networking for ordinary tool calls, use:
+`mxc-sandbox.json` in Pi's agent directory sets the configured policy and
+contains MXC's provider settings. On macOS, the following settings allow
+workspace writes and system reads in the selected sandbox. They also deny
+network access.
 
 ```json
 {
@@ -203,11 +205,12 @@ The file also accepts `backend`, `shells`, `userShell`, `readonlyPaths` and
 
 The network settings `off` and `on` select MXC's `ip-denied` and `open-egress`
 modes. The separate `denied` setting requests the native offline policy. A
-reviewer can request that policy independently of the editor's setting. Each
-effective policy has a separate backend and private scratch directory.
+reviewer can request denied networking even when the selected sandbox permits
+network access. Each effective policy has a separate backend and private scratch
+directory.
 
-Existing installations can keep their personal `byos.json` with provider `mxc`,
-including its policy, protection preset, provider configuration, cleanup budgets
+Existing installations can keep using `byos.json` with provider `mxc` to set the
+configured policy, protection preset, provider configuration, cleanup budgets
 and outside-execution settings. Use one settings file. Reload Pi after editing
 legacy settings.
 
