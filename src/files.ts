@@ -7,13 +7,13 @@ import type {
 	DirectoryEntry,
 	FileStat,
 	SandboxOperationContext
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 import {
 	SandboxCancelledError,
 	SandboxOperationError,
 	SandboxPathNotFoundError,
 	SandboxPermissionDeniedError
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 
 import { quote } from './shell.js';
 

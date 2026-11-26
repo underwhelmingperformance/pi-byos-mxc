@@ -2,8 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { Sandbox } from 'pi-bring-your-own-sandbox/api';
-import { getSandbox, negotiateSandbox } from 'pi-bring-your-own-sandbox/api';
+import { createSandboxClient } from 'pi-bring-your-own-sandbox/consumer';
 import { assert, expect, it } from 'vitest';
 
 import { CommandChecks } from './fixtures/command-checks.js';
@@ -29,40 +28,31 @@ it.runIf(process.platform === 'darwin')(
 				{
 					name: 'reviewer',
 					factory(pi) {
+						const client = createSandboxClient(pi, import.meta.filename);
+
 						pi.on('tool_call', (event, context) =>
 							checks.run(async () => {
-								const shared = await getSandbox(pi, context, {
-									workspaceRelationship: 'shared'
-								});
-								const copied = await negotiateSandbox(pi, context, {
-									workspaceRelationship: 'copied'
-								});
+								const lookup = client.findShellReviewSource(context, event);
 
-								expect({
-									ordinary: shared.workspace.relationship,
-									copied: copied.ok
-								}).toStrictEqual({ ordinary: 'shared', copied: false });
+								assert(lookup.ok);
 
-								const routes: Pick<Sandbox, 'copy'>[] = [];
-
-								pi.events.emit('pi-byos:review:tool-call:v2', {
-									sessionId: context.sessionManager.getSessionId(),
-									toolName: event.toolName,
-									toolCallId: event.toolCallId,
-									reply: (open: Pick<Sandbox, 'copy'>) => {
-										routes.push(open);
+								const open = lookup.source;
+								const negotiation = await open.negotiateCopy({
+									access: {
+										hostWorkspaceWrites: 'prevented',
+										network: 'prevented'
 									}
 								});
 
-								const [open] = routes;
-
-								expect(routes).toHaveLength(1);
-								assert.isDefined(open);
+								expect(negotiation.ok).toBe(true);
 
 								const signal = new AbortController().signal;
 
 								await expect(
-									open.copy({ signal, guarantees: ['no-host-system-files'] })
+									open.copy({
+										signal,
+										access: { hostSystemFiles: 'prevented' }
+									})
 								).rejects.toMatchObject({
 									name: 'UnsupportedSandboxPolicyError'
 								});
@@ -79,11 +69,11 @@ it.runIf(process.platform === 'darwin')(
 									});
 
 									expect({
-										policy: review.sandbox.policy.filesystemScope,
+										policy: review.sandbox.policy.hostSystemFiles,
 										relationship: review.sandbox.workspace.relationship,
 										text: Buffer.from(evidence.stdout).toString()
 									}).toStrictEqual({
-										policy: 'system-read-only',
+										policy: 'read-only',
 										relationship: 'copied',
 										text: 'draft'
 									});
@@ -113,7 +103,13 @@ it.runIf(process.platform === 'darwin')(
 					?.messages.find((message) => message.role === 'toolResult');
 
 				expect({ result: result?.content, errors }).toStrictEqual({
-					result: [{ type: 'text', text: 'edited' }],
+					result: [
+						{ type: 'text', text: 'edited' },
+						{
+							type: 'text',
+							text: 'Effective restrictions: Host workspace writes allowed, network denied, host user data denied, host system files read-only'
+						}
+					],
 					errors: []
 				});
 			},

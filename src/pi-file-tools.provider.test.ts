@@ -165,8 +165,6 @@ it.runIf(process.platform === 'darwin')(
 					await writeFile(
 						path.join(agentDirectory, 'mxc-sandbox.json'),
 						JSON.stringify({
-							mode: 'strict',
-							network: 'denied',
 							protectPaths: ['locked']
 						})
 					);

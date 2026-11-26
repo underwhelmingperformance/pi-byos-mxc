@@ -7,9 +7,7 @@ import { expect, it } from 'vitest';
 
 import { InvalidFixtureSettingError } from './fixtures/errors.js';
 import { nodeCommand, withNativeSandbox } from './fixtures/native-sandbox.js';
-import { nodeReadonlyPaths } from './fixtures/node-runtime.js';
-
-const nodePaths = await nodeReadonlyPaths();
+import { defaultPolicy } from './fixtures/profiles.js';
 
 type Protocol = 'tcp' | 'udp' | 'dns' | 'dig';
 type Network = 'ip-denied' | 'open-egress';
@@ -135,10 +133,7 @@ it.each(cases)(
 		const token = randomUUID().replaceAll('-', '');
 
 		await withNativeSandbox(
-			{
-				network,
-				readonlyPaths: [...nodePaths]
-			},
+			{},
 			async (sandbox) => {
 				const result = await sandbox.exec(
 					{
@@ -165,7 +160,8 @@ it.each(cases)(
 					},
 					observed: counts(network === 'open-egress' ? protocol : undefined)
 				});
-			}
+			},
+			{ policy: { ...defaultPolicy, network: network === 'open-egress' } }
 		);
 	}
 );

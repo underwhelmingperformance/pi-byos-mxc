@@ -2,11 +2,11 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-import type { BackendProcessContext } from 'pi-bring-your-own-sandbox/api';
+import type { BackendProcessContext } from 'pi-bring-your-own-sandbox/provider';
 import {
 	SandboxOperationError,
 	SandboxTransportError
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 import { expect, it } from 'vitest';
 
 import { FakeClock } from '../fixtures/clock.js';

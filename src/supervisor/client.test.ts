@@ -1,15 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { setImmediate as yieldImmediate } from 'node:timers/promises';
 
-import type {
-	BackendProcessContext,
-	SandboxDiagnostic
-} from 'pi-bring-your-own-sandbox/api';
+import type { SandboxDiagnostic } from 'pi-bring-your-own-sandbox/host';
+import type { BackendProcessContext } from 'pi-bring-your-own-sandbox/provider';
 import {
 	InvalidSandboxRequestError,
 	SandboxOperationError,
 	SandboxTransportError
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 import { expect, it } from 'vitest';
 
 import { ProcessTableUnavailableError } from '../errors.js';

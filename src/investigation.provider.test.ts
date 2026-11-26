@@ -6,14 +6,18 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import type { SandboxAcquireOptions } from 'pi-bring-your-own-sandbox/api';
+import type { SandboxAcquireOptions } from 'pi-bring-your-own-sandbox/consumer';
 import { expect, it } from 'vitest';
 
 import { nodeCommand, withNativeSandbox } from './fixtures/native-sandbox.js';
 
 const execute = promisify(execFile);
 const requirements: SandboxAcquireOptions = {
-	guarantees: ['no-workspace-writes', 'no-host-user-data', 'no-network'],
+	access: {
+		hostWorkspaceWrites: 'prevented',
+		hostUserData: 'prevented',
+		network: 'prevented'
+	},
 	capabilities: ['exec', 'files.read'],
 	processKinds: ['shell'],
 	shells: ['sh'],
@@ -73,7 +77,7 @@ it
 
 			await writeFile(secret, 'outside');
 			await withNativeSandbox(
-				{ network: 'open-egress' },
+				{},
 				async (sandbox, workspace) => {
 					const socket = path.join(workspace, 'socket');
 					const socketServer = createServer((client) =>
@@ -146,8 +150,7 @@ it
 					requirements: {
 						...requirements,
 						...(workspaceAccess === 'read-write' && {
-							guarantees: ['no-host-user-data', 'no-network'],
-							needs: ['workspace-writes']
+							access: { ...requirements.access, hostWorkspaceWrites: 'needed' }
 						})
 					}
 				}

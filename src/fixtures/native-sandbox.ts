@@ -4,17 +4,14 @@ import path from 'node:path';
 import type {
 	Sandbox,
 	SandboxAcquireOptions
-} from 'pi-bring-your-own-sandbox/api';
-import {
-	getSandbox,
-	initialiseSandboxHost,
-	negotiateSandbox
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/consumer';
+import { createSandboxClient } from 'pi-bring-your-own-sandbox/consumer';
+import { initialiseSandboxHost } from 'pi-bring-your-own-sandbox/host';
 import { expect } from 'vitest';
 
-import type { MxcConfig } from '../config.js';
+import type { MxcSettings } from '../config.js';
 import mxc from '../extension.js';
-import { EFFECTIVE_POLICY } from '../policy.js';
+import { SETTINGS_FILE } from '../settings.js';
 import { quote } from '../shell.js';
 
 import { CommandChecks } from './command-checks.js';
@@ -22,7 +19,7 @@ import { withPiRuntime } from './pi-runtime.js';
 
 interface NativeSandboxOptions {
 	/**
-	The personal BYOS policy. Defaults to the provider's effective policy.
+	The configured policy. Omission uses the SDK default.
 	*/
 	readonly policy?: unknown;
 	readonly requirements?: SandboxAcquireOptions;
@@ -40,7 +37,7 @@ interface NativeSandboxOptions {
 }
 
 export async function withNativeSandbox(
-	config: Partial<MxcConfig>,
+	config: Partial<MxcSettings>,
 	check: (sandbox: Sandbox, workspace: string) => Promise<void>,
 	options: NativeSandboxOptions = {}
 ): Promise<void> {
@@ -51,20 +48,21 @@ export async function withNativeSandbox(
 			{
 				name: 'host',
 				factory(pi) {
-					initialiseSandboxHost(pi, {});
+					initialiseSandboxHost(pi, import.meta.filename, {});
 				}
 			},
 			{ name: 'mxc', factory: mxc },
 			{
 				name: 'consumer',
 				factory(pi) {
+					const client = createSandboxClient(pi, import.meta.filename);
+
 					pi.registerCommand('verify-native', {
 						description: 'Verify a native MXC boundary.',
 						handler: (_arguments, context) =>
 							checks.run(async () => {
 								if (options.requirements) {
-									const negotiation = await negotiateSandbox(
-										pi,
+									const negotiation = await client.negotiate(
 										context,
 										options.requirements
 									);
@@ -72,7 +70,7 @@ export async function withNativeSandbox(
 									expect(negotiation.ok).toBe(true);
 								}
 
-								const opening = getSandbox(pi, context, options.requirements);
+								const opening = client.get(context, options.requirements);
 
 								if (options.verifyOpening !== undefined) {
 									await options.verifyOpening(opening);
@@ -95,11 +93,10 @@ export async function withNativeSandbox(
 			async prepare(directory, personal) {
 				await options.prepareWorkspace?.(directory);
 				await writeFile(
-					path.join(personal, 'byos.json'),
+					path.join(personal, SETTINGS_FILE),
 					JSON.stringify({
-						provider: 'mxc',
-						policy: options.policy ?? EFFECTIVE_POLICY,
-						providerConfig: config,
+						...config,
+						policy: options.policy,
 						cleanup: { cancellationGraceMs: 10_000, disposalTimeoutMs: 15_000 }
 					})
 				);

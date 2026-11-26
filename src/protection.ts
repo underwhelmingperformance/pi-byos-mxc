@@ -1,7 +1,5 @@
 import path from 'node:path';
 
-import type { WorkspaceProtection } from 'pi-bring-your-own-sandbox/api';
-
 import {
 	GitCommandError,
 	GitMetadataUnavailableError,
@@ -12,6 +10,18 @@ import {
 } from './errors.js';
 import type { Host } from './host.js';
 import { compareText, isPathWithin } from './paths.js';
+
+export type WorkspaceProtection =
+	| { readonly kind: 'git-metadata' }
+	| { readonly kind: 'path'; readonly path: string };
+
+export const HOST_CONFIGURATION_PROTECTION: readonly WorkspaceProtection[] =
+	Object.freeze([
+		Object.freeze({ kind: 'git-metadata' as const }),
+		...['.pi', '.envrc', '.direnv', '.vscode', '.idea', '.devcontainer'].map(
+			(path) => Object.freeze({ kind: 'path' as const, path })
+		)
+	]);
 
 export interface ProtectionRequest {
 	/**

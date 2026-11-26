@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-import { SandboxTransportError } from 'pi-bring-your-own-sandbox/api';
+import { SandboxTransportError } from 'pi-bring-your-own-sandbox/provider';
 import { expect, it } from 'vitest';
 
 import { cleanupControl } from '../fixtures/cleanup.js';

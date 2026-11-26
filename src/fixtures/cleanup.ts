@@ -1,4 +1,4 @@
-import type { SandboxCleanupContext } from 'pi-bring-your-own-sandbox/api';
+import type { SandboxCleanupContext } from 'pi-bring-your-own-sandbox/provider';
 
 /**
 A BYOS cleanup context for tests. Its `remainingMs()` returns `undefined` until

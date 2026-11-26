@@ -1,11 +1,11 @@
 import type {
 	RecoveryDescriptor,
 	SandboxOpenContext
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 import {
 	SandboxCleanupError,
 	SandboxStartupError
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 import { expect, it } from 'vitest';
 
 import { AllocationCancelledError } from './errors.js';

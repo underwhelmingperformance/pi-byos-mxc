@@ -1,28 +1,25 @@
 import { access, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { Sandbox } from 'pi-bring-your-own-sandbox/api';
-import {
-	getSandbox,
-	initialiseSandboxHost
-} from 'pi-bring-your-own-sandbox/api';
+import type { Sandbox } from 'pi-bring-your-own-sandbox/consumer';
+import { createSandboxClient } from 'pi-bring-your-own-sandbox/consumer';
+import { initialiseSandboxHost } from 'pi-bring-your-own-sandbox/host';
 import { assert, expect, it } from 'vitest';
 
 import mxc from './extension.js';
 import { CommandChecks } from './fixtures/command-checks.js';
+import { withNativeSandbox } from './fixtures/native-sandbox.js';
 import { withPiRuntime } from './fixtures/pi-runtime.js';
 import { ScriptedModel } from './fixtures/scripted-model.js';
 import mxcPackage from './mxc.js';
-import { EFFECTIVE_POLICY } from './policy.js';
 
 async function configure(
 	_directory: string,
 	agentDirectory: string
 ): Promise<void> {
 	await writeFile(
-		path.join(agentDirectory, 'byos.json'),
+		path.join(agentDirectory, 'mxc-sandbox.json'),
 		JSON.stringify({
-			provider: 'mxc',
 			cleanup: { cancellationGraceMs: 10_000, disposalTimeoutMs: 15_000 }
 		})
 	);
@@ -38,18 +35,20 @@ it('uses real shell consumers and releases the old allocation on session replace
 			{
 				name: 'host',
 				factory(pi) {
-					initialiseSandboxHost(pi, {});
+					initialiseSandboxHost(pi, import.meta.filename, {});
 				}
 			},
 			{ name: 'mxc', factory: mxc },
 			{
 				name: 'consumer',
 				factory(pi) {
+					const client = createSandboxClient(pi, import.meta.filename);
+
 					pi.registerCommand('verify-mxc', {
 						description: 'Verify the real MXC workspace.',
 						async handler(_arguments, context) {
 							await checks.run(async () => {
-								const sandbox = await getSandbox(pi, context, {
+								const sandbox = await client.get(context, {
 									processKinds: ['shell'],
 									shells: ['bash'],
 									terminationScope: 'process-group'
@@ -76,7 +75,6 @@ it('uses real shell consumers and releases the old allocation on session replace
 									capabilities: {
 										operations: [
 											'exec',
-											'workspace.protection',
 											'files.read',
 											'files.list',
 											'files.write',
@@ -86,17 +84,18 @@ it('uses real shell consumers and releases the old allocation on session replace
 										],
 										processKinds: ['shell'],
 										shells: ['sh', 'bash'],
-										exitStatus: 'optional',
+										exitStatus:
+											process.platform === 'darwin' ? 'guaranteed' : 'optional',
 										terminationScope: 'process-group'
 									}
 								});
 								await expect(
-									getSandbox(pi, context, { processKinds: ['argv'] })
+									client.get(context, { processKinds: ['argv'] })
 								).rejects.toMatchObject({
 									name: 'UnsupportedSandboxCapabilityError'
 								});
 								await expect(
-									getSandbox(pi, context, { terminationScope: 'workload' })
+									client.get(context, { terminationScope: 'workload' })
 								).rejects.toMatchObject({
 									name: 'UnsupportedSandboxCapabilityError'
 								});
@@ -139,74 +138,16 @@ it('uses real shell consumers and releases the old allocation on session replace
 	await expect(access(oldRoot)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-it('retains a valid default shell when the Bash probe fails', async () => {
-	const checks = new CommandChecks();
-
-	await withPiRuntime(
-		[
-			{
-				name: 'host',
-				factory(pi) {
-					initialiseSandboxHost(pi, {});
-				}
-			},
-			{ name: 'mxc', factory: mxc },
-			{
-				name: 'consumer',
-				factory(pi) {
-					pi.registerCommand('verify-sh', {
-						description: 'Verify shell fallback metadata.',
-						async handler(_arguments, context) {
-							await checks.run(async () => {
-								const sandbox = await getSandbox(pi, context, {
-									shells: ['sh']
-								});
-
-								expect({
-									capabilities: sandbox.capabilities,
-									defaultShell: sandbox.workspace.defaultShell
-								}).toStrictEqual({
-									capabilities: {
-										operations: [
-											'exec',
-											'workspace.protection',
-											'files.read',
-											'files.list',
-											'files.write',
-											'search.find',
-											'search.grep',
-											...(process.platform === 'darwin' ? ['copy'] : [])
-										],
-										processKinds: ['shell'],
-										shells: ['sh'],
-										exitStatus: 'optional',
-										terminationScope: 'process-group'
-									},
-									defaultShell: 'sh'
-								});
-							});
-						}
-					});
-				}
-			}
-		],
-		async (runtime, errors) => {
-			await runtime.session.prompt('/verify-sh');
-			checks.verify(1);
-			expect(errors).toStrictEqual([]);
-		},
+it('reports a startup error when the Bash probe exits non-zero', async () => {
+	await withNativeSandbox(
+		{ shells: { sh: '/bin/sh', bash: '/usr/bin/false' } },
+		() => expect.unreachable(),
 		{
-			async prepare(_directory, personal) {
-				await writeFile(
-					path.join(personal, 'byos.json'),
-					JSON.stringify({
-						provider: 'mxc',
-						policy: EFFECTIVE_POLICY,
-						providerConfig: {
-							shells: { sh: '/bin/sh', bash: '/usr/bin/false' }
-						}
-					})
-				);
+			async verifyOpening(opening) {
+				await expect(opening).rejects.toMatchObject({
+					name: 'SandboxStartupError',
+					cause: { cause: { name: 'ShellStartupError' } }
+				});
 			}
 		}
 	);
@@ -231,10 +172,7 @@ it.each([
 		label: 'signal-terminated shell',
 		command: 'printf target; kill -TERM $$',
 		isAllowed: true,
-		expected:
-			process.platform === 'darwin'
-				? 'target\n\nCommand terminated without an exit code'
-				: 'target\n\nCommand exited with code 143',
+		expected: 'target\n\nCommand exited with code 143',
 		isError: true
 	}
 ])(
@@ -250,7 +188,7 @@ it.each([
 				{
 					name: 'host',
 					factory(pi) {
-						initialiseSandboxHost(pi, {});
+						initialiseSandboxHost(pi, import.meta.filename, {});
 					}
 				},
 				{ name: 'mxc', factory: mxcPackage },
@@ -290,7 +228,22 @@ it.each([
 				expect({ errors, calls, results }).toStrictEqual({
 					errors: [],
 					calls: ['bash'],
-					results: [{ content: [{ type: 'text', text: expected }], isError }]
+					results: [
+						{
+							content: [
+								{ type: 'text', text: expected },
+								...(isAllowed
+									? [
+											{
+												type: 'text',
+												text: 'Effective restrictions: Host workspace writes allowed, network denied, host user data denied, host system files read-only'
+											}
+										]
+									: [])
+							],
+							isError
+						}
+					]
 				});
 			},
 			{

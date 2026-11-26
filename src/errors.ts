@@ -16,7 +16,7 @@ export class InvalidSettingsError extends MxcConfigError {
 		super(
 			paths.includes('')
 				? 'The MXC settings must be an object.'
-				: `Invalid MXC settings at ${paths.join(', ')}. Use supported backend and network modes, absolute paths and string environment values.`
+				: `Invalid MXC settings at ${paths.join(', ')}. Check the backend, protected paths, shell paths and environment values.`
 		);
 		this.paths = paths;
 	}
@@ -226,17 +226,14 @@ rejects the policy and reports the message to the user.
 */
 export abstract class UnenforceablePolicyError extends Error {}
 
-export class UnsupportedGrantError extends UnenforceablePolicyError {
-	override readonly name = 'UnsupportedGrantError';
-	readonly path: string;
-	readonly roots: readonly string[];
+export class ShellStartupError extends MxcConfigError {
+	override readonly name = 'ShellStartupError';
 
-	constructor(path: string, roots: readonly string[]) {
+	constructor(dialect: 'sh' | 'bash', options?: ErrorOptions) {
 		super(
-			`The system-read-only filesystem scope allows read-only grants only in system and runtime directories (${roots.join(', ')}). Remove ${path} from the MXC settings or use the provider-default scope.`
+			`MXC could not start the ${dialect} shell. Check shells.${dialect} in mxc-sandbox.json.`,
+			options
 		);
-		this.path = path;
-		this.roots = roots;
 	}
 }
 

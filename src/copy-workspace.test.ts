@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import type { SandboxOpenContext } from 'pi-bring-your-own-sandbox/api';
+import type { SandboxOpenContext } from 'pi-bring-your-own-sandbox/provider';
 import { expect, it, vi } from 'vitest';
 
 import { copyWorkspace } from './copy-workspace.js';
@@ -76,7 +76,7 @@ it.each([
 			await mkdir(path.join(directory, 'native'));
 			await writeFile(
 				path.join(directory, 'native/snapshot'),
-				`#!/bin/sh\nprintf 'private fixture path' >&2\nexit ${status}\n`,
+				`#!/bin/sh\nprintf 'private fixture path' >&2\nexit ${String(status)}\n`,
 				{ mode: 0o700 }
 			);
 

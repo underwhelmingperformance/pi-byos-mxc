@@ -2,9 +2,7 @@ import { expect, it } from 'vitest';
 
 import { InvalidFixtureSettingError } from './fixtures/errors.js';
 import { nodeCommand, withNativeSandbox } from './fixtures/native-sandbox.js';
-import { nodeReadonlyPaths } from './fixtures/node-runtime.js';
-
-const nodePaths = await nodeReadonlyPaths();
+import { defaultPolicy } from './fixtures/profiles.js';
 
 it.each(['ip-denied', 'open-egress'] as const)(
 	'checks external HTTPS with %s',
@@ -34,7 +32,7 @@ it.each(['ip-denied', 'open-egress'] as const)(
 		}
 
 		await withNativeSandbox(
-			{ network, readonlyPaths: [...nodePaths] },
+			{},
 			async (sandbox) => {
 				const script = `const r=require('node:https').get(${JSON.stringify(url.href)},s=>{s.resume();s.on('end',()=>console.log(s.statusCode));});r.setTimeout(5000,()=>r.destroy(new Error('timeout')));r.on('error',()=>console.log('blocked'));`;
 				const result = await sandbox.exec(
@@ -51,7 +49,8 @@ it.each(['ip-denied', 'open-egress'] as const)(
 					omittedBytes: { stdout: 0, stderr: 0 },
 					durationMs: 0
 				});
-			}
+			},
+			{ policy: { ...defaultPolicy, network: network === 'open-egress' } }
 		);
 	}
 );

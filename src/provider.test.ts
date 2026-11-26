@@ -2,94 +2,63 @@ import type {
 	RecoveryDescriptor,
 	SandboxOpenContext,
 	SandboxPolicy
-} from 'pi-bring-your-own-sandbox/api';
-import { UnsupportedSandboxPolicyError } from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
+import { UnsupportedSandboxPolicyError } from 'pi-bring-your-own-sandbox/provider';
 import { expect, it } from 'vitest';
 
 import { validateConfig } from './config.js';
 import { cleanupControl } from './fixtures/cleanup.js';
-import { EFFECTIVE_POLICY } from './policy.js';
+import { defaultPolicy, fixtureProfile } from './fixtures/profiles.js';
 import { provider } from './provider.js';
 
-it('advertises process-group shell execution and delegated policy defaults', () => {
-	expect({
-		copy: typeof provider.copy,
-		id: provider.id,
-		protocolVersion: provider.protocolVersion,
-		capabilities: provider.capabilities,
-		policies: provider.policies,
-		defaultPolicy: provider.defaultPolicy
-	}).toStrictEqual({
-		copy: process.platform === 'darwin' ? 'function' : 'undefined',
-		id: 'mxc',
-		protocolVersion: 1,
-		capabilities: {
-			operations: [
-				'exec',
-				'workspace.protection',
-				'files.read',
-				'files.list',
-				'files.write',
-				'search.find',
-				'search.grep',
-				...(process.platform === 'darwin' ? ['copy'] : [])
-			],
-			processKinds: ['shell'],
-			shells: ['sh', 'bash'],
-			exitStatus: 'optional',
-			terminationScope: 'process-group'
-		},
-		policies: {
-			workspaceRelationship: ['shared'],
-			workspaceAccess: ['read-write', 'read-only'],
-			filesystemScope: ['provider-default', 'system-read-only'],
-			networkAccess:
-				process.platform === 'darwin'
-					? ['provider-default', 'denied']
-					: ['provider-default']
-		},
-		defaultPolicy: EFFECTIVE_POLICY
-	});
-});
-
-it.each<SandboxPolicy>([
-	{ ...EFFECTIVE_POLICY, filesystemScope: 'workspace-only' }
-])('rejects unsupported policy before allocation: %j', async (policy) => {
-	const recoveries: RecoveryDescriptor[] = [];
-	let isConfirmed = false;
-	const context: SandboxOpenContext = {
-		operationId: 'open',
-		signal: new AbortController().signal,
-		deadline: 1000,
-		remainingMs: () => 10_000,
-		cleanup: cleanupControl().cleanup,
-		reportDiagnostic() {
-			return;
-		},
-		confirmCleanup() {
-			isConfirmed = true;
-		},
-		reportRecovery(recovery) {
-			recoveries.push(recovery);
-		}
-	};
-
-	await expect(
-		provider.open(
-			{
-				generationId: 'test',
-				sessionId: 'test',
-				hostWorkspace: '/does-not-exist',
-				policy,
-				configuration: validateConfig({})
-			},
-			context
-		)
-	).rejects.toStrictEqual(
-		new UnsupportedSandboxPolicyError({ operation: 'open', providerId: 'mxc' })
+it('offers the copy operation exactly when it declares copy profiles', () => {
+	expect(typeof provider.copy).toBe(
+		provider.profiles.copy.length > 0 ? 'function' : 'undefined'
 	);
-	expect({ recoveries, isConfirmed }).toStrictEqual({
-		recoveries: [{ kind: 'none' }],
-		isConfirmed: true
-	});
 });
+
+it.each<SandboxPolicy>([{ ...defaultPolicy, hostSystemFiles: 'denied' }])(
+	'rejects unsupported policy before allocation: %j',
+	async (policy) => {
+		const recoveries: RecoveryDescriptor[] = [];
+		let isConfirmed = false;
+		const context: SandboxOpenContext = {
+			operationId: 'open',
+			signal: new AbortController().signal,
+			deadline: 1000,
+			remainingMs: () => 10_000,
+			cleanup: cleanupControl().cleanup,
+			reportDiagnostic() {
+				return;
+			},
+			confirmCleanup() {
+				isConfirmed = true;
+			},
+			reportRecovery(recovery) {
+				recoveries.push(recovery);
+			}
+		};
+
+		await expect(
+			provider.open(
+				{
+					generationId: 'test',
+					sessionId: 'test',
+					hostWorkspace: '/does-not-exist',
+					profile: { ...fixtureProfile(), policy },
+					configuration: validateConfig({})
+				},
+				context
+			)
+		).rejects.toStrictEqual(
+			new UnsupportedSandboxPolicyError({
+				operation: 'open',
+				providerId: 'mxc'
+			})
+		);
+		expect({ recoveries, isConfirmed }).toStrictEqual({
+			recoveries: [{ kind: 'none' }],
+			isConfirmed: true
+		});
+	}
+);

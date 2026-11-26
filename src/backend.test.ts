@@ -1,36 +1,53 @@
 import type { NestedDirectoryJSON } from 'memfs';
+import type { SandboxDiagnostic } from 'pi-bring-your-own-sandbox/host';
 import type {
 	BackendProcessContext,
 	BackendProcessOutcome,
-	SandboxDiagnostic,
 	SandboxOpenContext,
 	SandboxPolicy
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 import {
 	SandboxCleanupError,
 	SandboxOperationError,
 	SandboxPathNotFoundError,
 	SandboxStartupError,
-	SandboxTimeoutError,
-	SandboxTransportError,
-	UnsupportedSandboxPolicyError
-} from 'pi-bring-your-own-sandbox/api';
+	SandboxTransportError
+} from 'pi-bring-your-own-sandbox/provider';
 import { expect, it } from 'vitest';
 
 import { MxcBackend } from './backend.js';
 import { validateConfig } from './config.js';
-import { OverlappingPathsError, UnsupportedGrantError } from './errors.js';
+import { OverlappingPathsError, ShellStartupError } from './errors.js';
 import { cleanupControl } from './fixtures/cleanup.js';
 import { memoryHost } from './fixtures/host.js';
-import { EFFECTIVE_POLICY } from './policy.js';
-import { SYSTEM_ROOTS } from './scope.js';
+import { defaultPolicy, fixtureProfile } from './fixtures/profiles.js';
 import type { JobOptions } from './supervisor/client.js';
 import { parentMessage } from './supervisor/protocol.js';
 
 const root = '/tmp/pi-byos-mxc-00000000-0000-4000-8000-000000000001';
 const scratch = `${root}/scratch`;
-const firstJob = '00000000-0000-4000-8000-000000000003';
+const firstJob = '00000000-0000-4000-8000-000000000004';
+const presetPaths = [
+	'/workspace/.devcontainer',
+	'/workspace/.direnv',
+	'/workspace/.envrc',
+	'/workspace/.git',
+	'/workspace/.idea',
+	'/workspace/.pi',
+	'/workspace/.vscode'
+];
 const exited = { kind: 'exited', exit: { kind: 'code', code: 0 } } as const;
+
+class Timeout extends Error {
+	override readonly name = 'SandboxTimeoutError';
+	readonly operation = 'exec';
+	readonly reason = 'deadline';
+	readonly providerId = 'mxc';
+
+	constructor(readonly completion: 'confirmed' | 'not-started') {
+		super('Fixture timeout.');
+	}
+}
 
 function operationContext(
 	overrides: Partial<BackendProcessContext & SandboxOpenContext> = {}
@@ -67,17 +84,19 @@ interface FixtureHost {
 	readonly files?: NestedDirectoryJSON;
 	readonly backend?: 'seatbelt' | 'bubblewrap';
 	readonly sockets?: readonly string[];
-	readonly grants?: readonly string[];
+	readonly protectPaths?: readonly string[];
+	readonly abortBash?: boolean;
 }
 
 async function openBackend(
 	job: Partial<FixtureJob> = {},
 	{
-		policy = EFFECTIVE_POLICY,
+		policy = defaultPolicy,
 		files = {},
 		backend: native = 'seatbelt',
 		sockets = [],
-		grants = []
+		protectPaths = [],
+		abortBash = false
 	}: FixtureHost = {}
 ) {
 	const run = job.run ?? (() => Promise.resolve(exited));
@@ -94,8 +113,8 @@ async function openBackend(
 			generationId: 'test',
 			sessionId: 'test',
 			hostWorkspace: '/workspace',
-			policy,
-			configuration: validateConfig({})
+			profile: fixtureProfile(policy, host.environment.platform),
+			configuration: validateConfig({ protectPaths: [...protectPaths] })
 		},
 		context,
 		{
@@ -104,9 +123,12 @@ async function openBackend(
 				Promise.resolve({
 					workspace: '/workspace',
 					entry: '/unused-supervisor',
-					shells: new Map([['sh', '/bin/sh']]),
-					readonlyPaths: ['/bin/sh', ...grants],
-					configuredPaths: ['/bin/sh', ...grants],
+					shells: new Map([
+						['sh', '/bin/sh'],
+						['bash', '/bin/bash']
+					]),
+					readonlyPaths: ['/bin/sh'],
+					protectedPaths: [],
 					backend: native
 				}),
 			createJob: (options) => ({
@@ -114,8 +136,13 @@ async function openBackend(
 					job.limitCleanup?.(remainingMs, options);
 				},
 				run: () =>
-					options.request.command === ':'
-						? Promise.resolve(exited)
+					options.request.command === ':' ||
+					options.request.command === '[[ 1 == 1 ]]'
+						? Promise.resolve(
+								abortBash && options.request.command !== ':'
+									? { kind: 'exited', exit: { kind: 'code', code: 1 } }
+									: exited
+							)
 						: run(options)
 			})
 		}
@@ -143,20 +170,12 @@ function records(memory: ReturnType<typeof memoryHost>['memory']) {
 it.each([
 	{
 		completion: 'confirmed',
-		failure: new SandboxTimeoutError({
-			operation: 'exec',
-			completion: 'confirmed',
-			providerId: 'mxc'
-		}),
+		failure: new Timeout('confirmed'),
 		retained: []
 	},
 	{
 		completion: 'not-started',
-		failure: new SandboxTimeoutError({
-			operation: 'exec',
-			completion: 'not-started',
-			providerId: 'mxc'
-		}),
+		failure: new Timeout('not-started'),
 		retained: []
 	},
 	{
@@ -206,11 +225,7 @@ it.each([
 );
 
 it('reports a confirmed completion whose recovery record cannot be removed', async () => {
-	const failure = new SandboxTimeoutError({
-		operation: 'exec',
-		completion: 'confirmed',
-		providerId: 'mxc'
-	});
+	const failure = new Timeout('confirmed');
 	const fixture = await openBackend({
 		run(options) {
 			const record = `${root}/${options.request.id}.json`;
@@ -393,23 +408,23 @@ it('rejects a missing working directory before starting a job', async () => {
 
 it.each([
 	{
-		workspaceAccess: 'read-write',
+		hostWorkspaceWrites: true,
 		grants: {
-			readwritePaths: ['/workspace', scratch],
-			readonlyPaths: ['/bin/sh']
+			readwritePaths: [scratch, '/workspace'],
+			readonlyPaths: ['/bin/sh', ...presetPaths]
 		}
 	},
 	{
-		workspaceAccess: 'read-only',
+		hostWorkspaceWrites: false,
 		grants: {
 			readwritePaths: [scratch],
-			readonlyPaths: ['/workspace', '/bin/sh']
+			readonlyPaths: ['/bin/sh', '/workspace']
 		}
 	}
 ] as const)(
-	'grants the workspace for $workspaceAccess access',
-	async ({ workspaceAccess, grants }) => {
-		const policy = { ...EFFECTIVE_POLICY, workspaceAccess };
+	'grants the workspace for $hostWorkspaceWrites access',
+	async ({ hostWorkspaceWrites, grants }) => {
+		const policy = { ...defaultPolicy, hostWorkspaceWrites };
 		const requests: JobOptions['request'][] = [];
 		const { backend, context } = await openBackend(
 			{
@@ -429,7 +444,7 @@ it.each([
 
 		expect({
 			id: backend.id,
-			policy: backend.policy,
+			policy: backend.profile.policy,
 			grants: requests.map(({ readwritePaths, readonlyPaths }) => ({
 				readwritePaths,
 				readonlyPaths
@@ -454,7 +469,7 @@ it('reports the configuration problem when opening fails', async () => {
 				generationId: 'test',
 				sessionId: 'test',
 				hostWorkspace: '/unused',
-				policy: EFFECTIVE_POLICY,
+				profile: fixtureProfile({}, 'darwin'),
 				configuration: validateConfig({})
 			},
 			operationContext({
@@ -491,13 +506,7 @@ it('removes private directories when settled disposal finishes after its deadlin
 
 it('grants protected workspace entries read-only and records the protection', async () => {
 	const requests: JobOptions['request'][] = [];
-	const policy: SandboxPolicy = {
-		...EFFECTIVE_POLICY,
-		workspaceProtection: [
-			{ kind: 'path', path: '.envrc' },
-			{ kind: 'path', path: '.pi' }
-		]
-	};
+
 	const { backend, context } = await openBackend(
 		{
 			run(options) {
@@ -506,7 +515,7 @@ it('grants protected workspace entries read-only and records the protection', as
 				return Promise.resolve(exited);
 			}
 		},
-		{ policy, files: { '/workspace/.pi/settings.json': '{}' } }
+		{ files: { '/workspace/.pi/settings.json': '{}' } }
 	);
 
 	await backend.exec(
@@ -515,11 +524,11 @@ it('grants protected workspace entries read-only and records the protection', as
 	);
 
 	expect({
-		policy: backend.policy,
+		policy: backend.profile.policy,
 		readonlyPaths: requests.map((request) => request.readonlyPaths)
 	}).toStrictEqual({
-		policy,
-		readonlyPaths: [['/workspace/.envrc', '/workspace/.pi', '/bin/sh']]
+		policy: defaultPolicy,
+		readonlyPaths: [['/bin/sh', ...presetPaths]]
 	});
 });
 
@@ -540,10 +549,7 @@ it('covers an absent protected entry with a placeholder while a Bubblewrap comma
 		{
 			backend: 'bubblewrap',
 			files: { '/workspace/hooks': {} },
-			policy: {
-				...EFFECTIVE_POLICY,
-				workspaceProtection: [{ kind: 'path', path: 'hooks/pre' }]
-			}
+			protectPaths: ['hooks/pre']
 		}
 	);
 	const { backend, context, memory } = fixture;
@@ -559,8 +565,8 @@ it('covers an absent protected entry with a placeholder while a Bubblewrap comma
 	}).toStrictEqual({
 		observed: [
 			{
-				readwritePaths: ['/workspace', scratch, '/workspace/hooks'],
-				readonlyPaths: ['/workspace/hooks/pre', '/bin/sh'],
+				readwritePaths: [scratch, '/workspace', '/workspace/hooks'],
+				readonlyPaths: ['/bin/sh', ...presetPaths, '/workspace/hooks/pre'],
 				placeholder: 0
 			}
 		],
@@ -577,10 +583,7 @@ it('keeps a placeholder and records it when the command outcome is unknown', asy
 		{ run: () => Promise.reject(failure) },
 		{
 			backend: 'bubblewrap',
-			policy: {
-				...EFFECTIVE_POLICY,
-				workspaceProtection: [{ kind: 'path', path: '.envrc' }]
-			}
+			protectPaths: ['.envrc']
 		}
 	);
 
@@ -592,7 +595,7 @@ it('keeps a placeholder and records it when the command outcome is unknown', asy
 		records: records(memory)
 	}).toStrictEqual({
 		placeholder: true,
-		records: [{ id: firstJob, placeholders: ['/workspace/.envrc'] }]
+		records: [{ id: firstJob, placeholders: presetPaths }]
 	});
 });
 
@@ -632,39 +635,11 @@ it.each([
 	}
 );
 
-it('accepts system grants for system-read-only', async () => {
-	const { backend } = await openBackend(
-		{},
-		{
-			grants: ['/opt/homebrew/bin'],
-			policy: { ...EFFECTIVE_POLICY, filesystemScope: 'system-read-only' }
-		}
-	);
-
-	expect(backend.policy).toStrictEqual({
-		...EFFECTIVE_POLICY,
-		filesystemScope: 'system-read-only'
-	});
-});
-
-it('rejects a configured grant outside system directories for system-read-only', async () => {
-	const cause = new UnsupportedGrantError(
-		'/home/user/.local/bin',
-		SYSTEM_ROOTS.darwin ?? []
-	);
-
-	await expect(
-		openBackend(
-			{},
-			{
-				grants: ['/home/user/.local/bin'],
-				policy: { ...EFFECTIVE_POLICY, filesystemScope: 'system-read-only' }
-			}
-		)
-	).rejects.toStrictEqual(
-		new UnsupportedSandboxPolicyError(
+it('fails startup if Bash cannot execute inside the sandbox', async () => {
+	await expect(openBackend({}, { abortBash: true })).rejects.toStrictEqual(
+		new SandboxStartupError(
 			{ operation: 'open', providerId: 'mxc' },
-			{ cause }
+			{ cause: new ShellStartupError('bash') }
 		)
 	);
 });

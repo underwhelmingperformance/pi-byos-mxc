@@ -7,7 +7,6 @@ import { expect, it } from 'vitest';
 
 import { withNativeSandbox } from './fixtures/native-sandbox.js';
 import { compareText } from './paths.js';
-import { EFFECTIVE_POLICY } from './policy.js';
 
 const execute = promisify(execFile);
 const isLinux = process.platform === 'linux';
@@ -105,22 +104,16 @@ it('keeps host configuration immutable while ordinary workspace writes succeed',
 			});
 
 			expect({
-				protection: sandbox.policy.workspaceProtection?.length,
 				after: await observe(workspace),
 				ordinary: ordinary.exit,
 				written: await readFile(path.join(workspace, 'ordinary'), 'utf8')
 			}).toStrictEqual({
-				protection: 7,
 				after: before,
 				ordinary: { kind: 'code', code: 0 },
 				written: 'ok'
 			});
 		},
 		{
-			policy: {
-				...EFFECTIVE_POLICY,
-				workspaceProtection: { preset: 'host-configuration' }
-			},
 			async prepareWorkspace(workspace) {
 				await execute('git', ['init', '--quiet', workspace]);
 				await mkdir(path.join(workspace, '.pi'));
@@ -137,7 +130,7 @@ it.skipIf(!isLinux)(
 	'protects a nested path by pinning the directories above it',
 	async () => {
 		await withNativeSandbox(
-			{},
+			{ protectPaths: ['tools/hooks', 'tools/generated/hook'] },
 			async (sandbox, workspace) => {
 				const before = await observeEntry(path.join(workspace, 'tools/hooks'));
 
@@ -170,13 +163,6 @@ it.skipIf(!isLinux)(
 				});
 			},
 			{
-				policy: {
-					...EFFECTIVE_POLICY,
-					workspaceProtection: [
-						{ kind: 'path', path: 'tools/hooks' },
-						{ kind: 'path', path: 'tools/generated/hook' }
-					]
-				},
 				async prepareWorkspace(workspace) {
 					await mkdir(path.join(workspace, 'tools'));
 					await writeFile(path.join(workspace, 'tools', 'hooks'), 'original');

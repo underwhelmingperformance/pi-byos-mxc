@@ -16,7 +16,7 @@ const entries = {
 	koffi: createRequire(sdk).resolve('koffi'),
 	typebox: fileURLToPath(import.meta.resolve('typebox')),
 	'pi-bring-your-own-sandbox': fileURLToPath(
-		import.meta.resolve('pi-bring-your-own-sandbox/api')
+		import.meta.resolve('pi-bring-your-own-sandbox/provider')
 	)
 };
 

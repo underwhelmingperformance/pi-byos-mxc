@@ -1,23 +1,24 @@
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import type {
 	BackendFiles,
 	BackendProcessContext,
 	BackendProcessOutcome,
 	BackendSearch,
+	GrantedPath,
 	ProcessRequest,
+	Profile,
 	RecoveryDescriptor,
 	SandboxBackend,
-	SandboxCapabilities,
 	SandboxCleanupContext,
 	SandboxCopySource,
 	SandboxOpenContext,
 	SandboxOpenRequest,
 	SandboxOperationContext,
 	SandboxPolicy,
-	SandboxWorkspace,
-	ShellDialect
-} from 'pi-bring-your-own-sandbox/api';
+	SandboxWorkspace
+} from 'pi-bring-your-own-sandbox/provider';
 import {
 	InvalidSandboxRequestError,
 	isSandboxError,
@@ -29,25 +30,33 @@ import {
 	StaleSandboxHandleError,
 	UnsupportedSandboxCapabilityError,
 	UnsupportedSandboxPolicyError
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 
 import type { MxcConfig } from './config.js';
 import { copyWorkspace, SnapshotRefusalError } from './copy-workspace.js';
-import { MxcConfigError, UnenforceablePolicyError } from './errors.js';
+import {
+	MxcConfigError,
+	ShellStartupError,
+	UnenforceablePolicyError
+} from './errors.js';
 import { sandboxFiles } from './files.js';
+import {
+	canonicalGrantPath,
+	credentialPaths,
+	planPathGrants
+} from './grants.js';
 import type { Host, HostFileSystem } from './host.js';
 import { systemHost } from './host.js';
 import { assertDisjointPaths, compareText } from './paths.js';
 import type { PlaceholderLease } from './placeholders.js';
 import { PlaceholderRegistry } from './placeholders.js';
 import { resolverSockets } from './platform/system-paths.js';
-import { EFFECTIVE_POLICY, operations } from './policy.js';
+import { networkMode, profilesFor } from './policy.js';
 import type { Protection } from './protection.js';
-import { planProtection } from './protection.js';
+import { HOST_CONFIGURATION_PROTECTION, planProtection } from './protection.js';
 import { RecoveryStore } from './recovery.js';
 import type { MxcRuntime } from './runtime.js';
 import { prepareRuntime } from './runtime.js';
-import { assertSystemGrants, SYSTEM_ROOTS } from './scope.js';
 import { sandboxSearch } from './search.js';
 import { SYSTEM_PATH, targetEnvironment } from './shell.js';
 import type { JobOptions } from './supervisor/client.js';
@@ -87,24 +96,11 @@ const DEFAULT_DEPENDENCIES: BackendDependencies = Object.freeze({
 	createJob: (options: JobOptions) => new SupervisorJob(options)
 });
 
-function capabilities(
-	shells: ReadonlyMap<ShellDialect, string>,
-	isOffline: boolean
-): SandboxCapabilities {
-	return Object.freeze({
-		operations,
-		processKinds: Object.freeze(['shell'] as const),
-		shells: Object.freeze(shells.keys().toArray()),
-		exitStatus: isOffline ? 'guaranteed' : 'optional',
-		terminationScope: 'process-group'
-	});
-}
-
 function describePolicy(
 	runtime: MxcRuntime & { readonly protection: Protection },
 	policy: SandboxPolicy,
-	network: MxcConfig['network'],
-	platform: NodeJS.Platform,
+	network: StartMessage['network'],
+	isWritable: boolean,
 	relationship: 'shared' | 'copied'
 ): string {
 	const isSeatbelt = runtime.backend === 'seatbelt';
@@ -118,19 +114,19 @@ function describePolicy(
 		...(isSeatbelt && network === 'open-egress' ? ['anywhere on the host'] : [])
 	].join(' and ');
 	const filesystem =
-		policy.filesystemScope === 'system-read-only'
-			? `Read-only host access is limited to system and runtime directories: MXC's baseline plus configured grants inside ${(SYSTEM_ROOTS[platform] ?? []).join(', ')}.${isSeatbelt ? ' File metadata, such as existence and size, remains visible for other host paths.' : ''}`
-			: 'Baseline host system reads plus configured read-only grants.';
+		policy.hostUserData === 'read-only'
+			? 'MXC permits host file reads outside known credential locations. Host writes require a workspace permission or a path grant.'
+			: 'MXC permits host system reads and access through listed path grants. Other host user data is denied.';
 
 	return [
-		`MXC ${runtime.backend}; ${policy.workspaceAccess === 'read-write' ? 'writable' : 'read-only'} ${relationship} workspace and private writable scratch.`,
+		`MXC ${runtime.backend}; ${isWritable ? 'writable' : 'read-only'} ${relationship} workspace and private writable scratch.`,
 		filesystem,
 		...(protectedEntries.length > 0
 			? [
 					`Read-only protected workspace entries: ${protectedEntries.join(', ')}.`
 				]
 			: []),
-		...(policy.networkAccess === 'denied'
+		...(network === 'denied'
 			? [
 					'Seatbelt denies IP networking, pathname UNIX socket connections and Mach service lookup.'
 				]
@@ -177,31 +173,27 @@ async function workingDirectory(
 	throw new SandboxPathNotFoundError(identity);
 }
 
-function unsupportedPolicy(
-	policy: SandboxPolicy,
-	relationship: 'shared' | 'copied',
-	platform: NodeJS.Platform
-): string | undefined {
+async function verifyShell(
+	backend: SandboxBackend,
+	dialect: 'sh' | 'bash',
+	command: string,
+	context: BackendProcessContext
+): Promise<void> {
+	let outcome: BackendProcessOutcome;
+
+	try {
+		outcome = await backend.exec({ kind: 'shell', dialect, command }, context);
+	} catch (error) {
+		throw new ShellStartupError(dialect, { cause: error });
+	}
+
 	if (
-		policy.workspaceRelationship !== undefined &&
-		policy.workspaceRelationship !== relationship
+		outcome.kind !== 'exited' ||
+		outcome.exit.kind !== 'code' ||
+		outcome.exit.code !== 0
 	) {
-		return `This MXC operation provides a ${relationship} workspace.`;
+		throw new ShellStartupError(dialect);
 	}
-
-	if (policy.filesystemScope === 'workspace-only') {
-		return 'MXC needs read access to system files to execute native commands.';
-	}
-
-	if (platform !== 'darwin' && policy.networkAccess === 'denied') {
-		return 'MXC can deny all networking only on macOS.';
-	}
-
-	if (relationship === 'copied' && platform !== 'darwin') {
-		return 'MXC can clone a workspace only on macOS.';
-	}
-
-	return undefined;
 }
 
 export class MxcBackend implements SandboxBackend {
@@ -243,20 +235,22 @@ export class MxcBackend implements SandboxBackend {
 		context.reportRecovery({ kind: 'none' });
 
 		try {
-			const reason = unsupportedPolicy(
-				request.policy,
-				relationship,
-				dependencies.host.environment.platform
+			const platform = dependencies.host.environment.platform;
+			const profiles = profilesFor(platform);
+			const profile = (
+				source === undefined ? profiles.open : profiles.copy
+			).find((candidate) =>
+				isDeepStrictEqual(candidate.policy, request.profile.policy)
 			);
 
-			if (reason !== undefined) {
-				context.reportDiagnostic({ level: 'warning', message: reason });
-
+			if (profile === undefined) {
 				throw new UnsupportedSandboxPolicyError({
 					operation: 'open',
 					providerId: 'mxc'
 				});
 			}
+
+			const { policy } = profile;
 
 			const parent =
 				source?.kind === 'backend'
@@ -268,8 +262,7 @@ export class MxcBackend implements SandboxBackend {
 					: undefined;
 			const runtime = await dependencies.prepareRuntime(
 				parent?.workspace.root ?? request.hostWorkspace,
-				request.configuration,
-				context
+				request.configuration
 			);
 
 			if (
@@ -283,13 +276,6 @@ export class MxcBackend implements SandboxBackend {
 					operation: 'open',
 					providerId: 'mxc'
 				});
-			}
-
-			if (request.policy.filesystemScope === 'system-read-only') {
-				assertSystemGrants(
-					dependencies.host.environment.platform,
-					runtime.configuredPaths
-				);
 			}
 
 			store = await RecoveryStore.open(
@@ -314,19 +300,53 @@ export class MxcBackend implements SandboxBackend {
 							store.root,
 							copyContext
 						);
+			const isWritable =
+				relationship === 'copied' || policy.hostWorkspaceWrites;
 			const protection = await planProtection(dependencies.host, {
 				workspace,
 				backend: runtime.backend,
-				workspaceAccess: request.policy.workspaceAccess,
-				resources: request.policy.workspaceProtection ?? []
+				workspaceAccess: isWritable ? 'read-write' : 'read-only',
+				resources: [
+					...HOST_CONFIGURATION_PROTECTION,
+					...request.configuration.protectPaths.map((entry) => ({
+						kind: 'path' as const,
+						path: entry
+					}))
+				]
+			});
+			const { fs, environment } = dependencies.host;
+			const hostHome = await canonicalGrantPath(fs, environment.homeDirectory);
+			const hasHostReads = policy.hostUserData === 'read-only';
+			const credentials =
+				hasHostReads || request.paths !== undefined
+					? await credentialPaths(fs, hostHome)
+					: [];
+			const grants = await planPathGrants(fs, request, context, {
+				hostWorkspace:
+					parent === undefined
+						? runtime.workspace
+						: parent.#canonicalHostWorkspace,
+				workspace,
+				hostHome,
+				targetHome: store.scratch,
+				denied: credentials,
+				protectedWrites: [
+					store.root,
+					...runtime.protectedPaths,
+					...runtime.readonlyPaths
+				],
+				policy
 			});
 
 			const backend = new MxcBackend(
 				request,
+				profile,
 				{ ...runtime, workspace, protection },
 				store,
 				dependencies,
-				relationship
+				relationship,
+				grants,
+				hasHostReads ? credentials : []
 			);
 			const probeContext: BackendProcessContext = {
 				...context,
@@ -334,45 +354,12 @@ export class MxcBackend implements SandboxBackend {
 					return;
 				}
 			};
-			const sh = await backend.exec(
-				{ kind: 'shell', dialect: 'sh', command: ':' },
-				probeContext
-			);
 
-			if (
-				sh.kind !== 'exited' ||
-				sh.exit.kind !== 'code' ||
-				sh.exit.code !== 0
-			) {
-				throw new SandboxStartupError({
-					operation: 'open',
-					providerId: 'mxc',
-					recovery: store.recovery
-				});
-			}
-
-			if (backend.#shells.has('bash')) {
-				const bash = await backend.exec(
-					{ kind: 'shell', dialect: 'bash', command: '[[ 1 == 1 ]]' },
-					probeContext
-				);
-
-				if (
-					bash.kind !== 'exited' ||
-					bash.exit.kind !== 'code' ||
-					bash.exit.code !== 0
-				) {
-					backend.#shells.delete('bash');
-					backend.#capabilities = capabilities(
-						backend.#shells,
-						request.policy.networkAccess === 'denied'
-					);
-					context.reportDiagnostic({
-						level: 'warning',
-						message:
-							'Bash could not execute inside MXC. This backend offers sh only.'
-					});
-				}
+			for (const [dialect, command] of [
+				['sh', ':'],
+				['bash', '[[ 1 == 1 ]]']
+			] as const) {
+				await verifyShell(backend, dialect, command, probeContext);
 			}
 
 			if (context.signal.aborted) {
@@ -453,21 +440,25 @@ export class MxcBackend implements SandboxBackend {
 	readonly #protection: Protection;
 	readonly #runtime: MxcRuntime;
 	readonly #hostWorkspace: string;
+	readonly #canonicalHostWorkspace: string;
 	readonly #sessionId: string;
 	readonly #configuration: MxcConfig;
 	readonly #store: RecoveryStore;
-	readonly #grants: Pick<StartMessage, 'readwritePaths' | 'readonlyPaths'>;
-	readonly #shells: Map<ShellDialect, string>;
+	readonly #grants: Pick<
+		StartMessage,
+		'readwritePaths' | 'readonlyPaths' | 'deniedPaths'
+	>;
+	readonly #network: StartMessage['network'];
 	readonly #lifetime = new AbortController();
 	readonly #jobs = new Set<Promise<BackendProcessOutcome>>();
 	readonly #runners = new Set<JobRunner>();
-	#capabilities: SandboxCapabilities;
 	#isClosing = false;
 	#disposalCleanup: SandboxCleanupContext | undefined;
 	#disposal: Promise<void> | undefined;
 	readonly id: string;
 	readonly workspace: SandboxWorkspace;
-	readonly policy: SandboxPolicy;
+	readonly profile: Profile;
+	readonly grantedPaths?: readonly GrantedPath[];
 	readonly files: BackendFiles;
 	readonly search: BackendSearch;
 	readonly policyDescription: string;
@@ -475,12 +466,15 @@ export class MxcBackend implements SandboxBackend {
 
 	private constructor(
 		request: SandboxOpenRequest<MxcConfig>,
+		profile: Profile,
 		runtime: MxcRuntime & {
 			readonly protection: Protection;
 		},
 		store: RecoveryStore,
 		dependencies: BackendDependencies,
-		relationship: 'shared' | 'copied'
+		relationship: 'shared' | 'copied',
+		grants: Awaited<ReturnType<typeof planPathGrants>>,
+		deniedPaths: readonly string[]
 	) {
 		this.#host = dependencies.host;
 		this.#createJob = dependencies.createJob;
@@ -488,30 +482,23 @@ export class MxcBackend implements SandboxBackend {
 		this.#protection = runtime.protection;
 		this.#runtime = runtime;
 		this.#hostWorkspace = request.hostWorkspace;
+		this.#canonicalHostWorkspace = grants.hostWorkspace;
 		this.#sessionId = request.sessionId;
 		this.#configuration = request.configuration;
 		this.#store = store;
-		this.#shells = new Map(runtime.shells);
-		this.#capabilities = capabilities(
-			this.#shells,
-			request.policy.networkAccess === 'denied'
-		);
+		this.profile = profile;
+		this.#network = networkMode(runtime.backend, profile.policy);
 
-		const protection = request.policy.workspaceProtection;
+		if (grants.mappings.length > 0) {
+			this.grantedPaths = Object.freeze(
+				grants.mappings.map((mapping) => Object.freeze(mapping))
+			);
+		}
 
-		this.policy = Object.freeze({
-			...EFFECTIVE_POLICY,
-			...(request.policy.workspaceRelationship !== undefined && {
-				workspaceRelationship: relationship
-			}),
-			workspaceAccess: request.policy.workspaceAccess,
-			filesystemScope: request.policy.filesystemScope,
-			networkAccess: request.policy.networkAccess,
-			...(protection !== undefined && { workspaceProtection: protection })
-		});
 		this.id = `mxc:${request.generationId}:${store.id}`;
 
-		const isWritable = this.policy.workspaceAccess === 'read-write';
+		const isWritable =
+			relationship === 'copied' || profile.policy.hostWorkspaceWrites;
 
 		this.workspace = Object.freeze({
 			root: runtime.workspace,
@@ -521,31 +508,31 @@ export class MxcBackend implements SandboxBackend {
 			defaultShell: 'sh',
 			description:
 				relationship === 'copied'
-					? isWritable
-						? 'Private writable workspace copy. Changes stay in the copy until disposal.'
-						: 'Private read-only workspace copy.'
+					? 'Private writable workspace copy. Changes stay in the copy until disposal.'
 					: isWritable
 						? 'Shared host workspace; changes persist. Private home/scratch lasts until generation disposal.'
 						: 'Shared host workspace, read-only inside the sandbox; host changes are visible. Private writable home/scratch lasts until generation disposal.'
 		});
 		this.recovery = store.recovery;
-		this.#grants = isWritable
-			? {
-					readwritePaths: [
-						runtime.workspace,
-						store.scratch,
-						...runtime.protection.pins
-					],
-					readonlyPaths: [
-						...runtime.protection.readonlyPaths,
-						...runtime.protection.placeholders,
-						...runtime.readonlyPaths
-					]
-				}
-			: {
-					readwritePaths: [store.scratch],
-					readonlyPaths: [runtime.workspace, ...runtime.readonlyPaths]
-				};
+		this.#grants = {
+			readwritePaths: [
+				store.scratch,
+				...grants.extraWrites,
+				...(isWritable ? [runtime.workspace, ...runtime.protection.pins] : [])
+			],
+			readonlyPaths: [
+				...(profile.policy.hostUserData === 'read-only' ? ['/'] : []),
+				...runtime.readonlyPaths,
+				...grants.extraReads,
+				...(isWritable
+					? [
+							...runtime.protection.readonlyPaths,
+							...runtime.protection.placeholders
+						]
+					: [runtime.workspace])
+			],
+			deniedPaths: [...deniedPaths]
+		};
 
 		const helper = path.resolve(path.dirname(runtime.entry), '../native/files');
 
@@ -574,9 +561,9 @@ export class MxcBackend implements SandboxBackend {
 		);
 		this.policyDescription = describePolicy(
 			runtime,
-			this.policy,
-			request.configuration.network,
-			dependencies.host.environment.platform,
+			profile.policy,
+			this.#network,
+			isWritable,
 			relationship
 		);
 	}
@@ -600,10 +587,7 @@ export class MxcBackend implements SandboxBackend {
 			kind: 'start',
 			id,
 			backend: this.#runtime.backend,
-			network:
-				this.policy.networkAccess === 'denied'
-					? 'denied'
-					: this.#configuration.network,
+			network: this.#network,
 			command: request.command,
 			shell,
 			cwd,
@@ -611,7 +595,7 @@ export class MxcBackend implements SandboxBackend {
 			environment: targetEnvironment(
 				{
 					PATH: [
-						...(this.policy.networkAccess === 'denied'
+						...(this.#network === 'denied'
 							? [
 									'/Library/Developer/CommandLineTools/usr/bin',
 									'/Applications/Xcode.app/Contents/Developer/usr/bin'
@@ -630,10 +614,13 @@ export class MxcBackend implements SandboxBackend {
 				...this.#grants.readonlyPaths,
 				...(internal ? [internal.helper] : [])
 			],
-			deniedPaths: await resolverSockets(
-				this.#host.environment.platform,
-				this.#host.fs
-			)
+			deniedPaths: [
+				...this.#grants.deniedPaths,
+				...(await resolverSockets(
+					this.#host.environment.platform,
+					this.#host.fs
+				))
+			]
 		};
 
 		if (Buffer.byteLength(JSON.stringify(invocation)) > MAX_START_BYTES) {
@@ -765,7 +752,7 @@ export class MxcBackend implements SandboxBackend {
 			});
 		}
 
-		const shell = this.#shells.get(request.dialect);
+		const shell = this.#runtime.shells.get(request.dialect);
 
 		if (shell === undefined) {
 			throw new UnsupportedSandboxCapabilityError({
@@ -788,10 +775,6 @@ export class MxcBackend implements SandboxBackend {
 		} finally {
 			this.#jobs.delete(running);
 		}
-	}
-
-	get capabilities(): SandboxCapabilities {
-		return this.#capabilities;
 	}
 
 	exec(

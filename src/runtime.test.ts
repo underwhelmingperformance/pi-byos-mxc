@@ -1,13 +1,12 @@
-import type { SandboxDiagnostic } from 'pi-bring-your-own-sandbox/api';
 import { expect, it } from 'vitest';
 
 import { validateConfig } from './config.js';
 import {
 	InvalidPackageManifestError,
 	OverlappingPathsError,
+	ShellStartupError,
 	UnsupportedRuntimeError
 } from './errors.js';
-import { cleanupControl } from './fixtures/cleanup.js';
 import { memoryHost } from './fixtures/host.js';
 import type { HostEnvironment } from './host.js';
 import { prepareRuntime } from './runtime.js';
@@ -56,29 +55,10 @@ function layout(environment: Partial<HostEnvironment> = {}) {
 	memory.chmodSync('/bin/dash', 0o755);
 	memory.chmodSync('/bin/bash', 0o755);
 
-	const diagnostics: SandboxDiagnostic[] = [];
-	const context = {
-		operationId: 'runtime',
-		signal: new AbortController().signal,
-		deadline: 1000,
-		remainingMs: () => 10_000,
-		cleanup: cleanupControl().cleanup,
-		reportDiagnostic(diagnostic: SandboxDiagnostic) {
-			diagnostics.push(diagnostic);
-		},
-		reportRecovery() {
-			return;
-		},
-		confirmCleanup() {
-			return;
-		}
-	};
-
 	return {
 		...fixture,
-		diagnostics,
 		prepare: (workspace: string, settings: unknown = {}) =>
-			prepareRuntime(workspace, validateConfig(settings), context, {
+			prepareRuntime(workspace, validateConfig(settings), {
 				host: fixture.host,
 				supervisor
 			})
@@ -86,30 +66,33 @@ function layout(environment: Partial<HostEnvironment> = {}) {
 }
 
 it('prepares canonical grants for a separate workspace', async () => {
-	const { prepare, diagnostics } = layout();
-	const runtime = await prepare('/alias', { readonlyPaths: ['/tools'] });
+	const { prepare } = layout();
+	const runtime = await prepare('/alias');
 
 	expect({
 		...runtime,
-		shells: [...runtime.shells],
-		diagnostics
+		shells: [...runtime.shells]
 	}).toStrictEqual({
 		entry: supervisor,
 		workspace: '/workspace',
+		protectedPaths: [
+			'/runtime/pkg',
+			'/runtime/store/direct/node_modules/direct',
+			'/runtime/node_modules/peer',
+			'/runtime/store/transitive/node_modules/transitive',
+			'/runtime/node/bin/node'
+		],
 		readonlyPaths: [
-			'/tools',
 			'/bin/dash',
 			'/bin/bash',
 			'/runtime/node/bin/node',
 			'/runtime/pkg/dist/tools'
 		],
-		configuredPaths: ['/tools', '/bin/dash', '/bin/bash'],
 		shells: [
 			['sh', '/bin/dash'],
 			['bash', '/bin/bash']
 		],
-		backend: 'seatbelt',
-		diagnostics: []
+		backend: 'seatbelt'
 	});
 });
 
@@ -157,19 +140,6 @@ it('does not protect an installed package outside the dependency graph', async (
 	).resolves.toMatchObject({ workspace: '/runtime/node_modules/unrelated' });
 });
 
-it.each([
-	{ name: 'a read-only grant inside it', grant: '/workspace/tools' },
-	{ name: 'a read-only grant containing it', grant: '/' },
-	{ name: 'a read-only grant through a symlink alias', grant: '/alias' }
-])('rejects a workspace that overlaps $name', async ({ grant }) => {
-	const { prepare, host } = layout();
-	const granted = await host.fs.realpath(grant);
-
-	await expect(
-		prepare('/workspace', { readonlyPaths: [grant] })
-	).rejects.toStrictEqual(new OverlappingPathsError('/workspace', granted));
-});
-
 it('rejects a configured shell inside the workspace', async () => {
 	const { prepare, memory } = layout();
 
@@ -182,22 +152,14 @@ it('rejects a configured shell inside the workspace', async () => {
 	);
 });
 
-it('offers sh only when the configured Bash is not executable', async () => {
-	const { prepare, memory, diagnostics } = layout();
+it('fails startup when the configured Bash is not executable', async () => {
+	const { prepare, memory } = layout();
 
 	memory.chmodSync('/bin/bash', 0o644);
 
-	const runtime = await prepare('/workspace');
-
-	expect({ shells: [...runtime.shells], diagnostics }).toStrictEqual({
-		shells: [['sh', '/bin/dash']],
-		diagnostics: [
-			{
-				level: 'warning',
-				message:
-					'The configured Bash executable is unavailable. MXC will offer sh only.'
-			}
-		]
+	await expect(prepare('/workspace')).rejects.toMatchObject({
+		name: 'ShellStartupError',
+		message: new ShellStartupError('bash').message
 	});
 });
 
@@ -230,20 +192,4 @@ it('rejects a dependency manifest with invalid dependency fields', async () => {
 	await expect(prepare('/workspace')).rejects.toStrictEqual(
 		new InvalidPackageManifestError('/runtime/store/direct/node_modules/direct')
 	);
-});
-
-it('reports configured grants at their canonical targets', async () => {
-	const { prepare, memory } = layout();
-
-	memory.mkdirSync('/home/user/tool', { recursive: true });
-	memory.mkdirSync('/opt');
-	memory.symlinkSync('/home/user/tool', '/opt/tool');
-
-	const runtime = await prepare('/workspace', { readonlyPaths: ['/opt/tool'] });
-
-	expect(runtime.configuredPaths).toStrictEqual([
-		'/home/user/tool',
-		'/bin/dash',
-		'/bin/bash'
-	]);
 });

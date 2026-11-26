@@ -1,4 +1,4 @@
-import type { ProcessEnvironment } from 'pi-bring-your-own-sandbox/api';
+import type { ProcessEnvironment } from 'pi-bring-your-own-sandbox/provider';
 
 export const SYSTEM_PATH = '/bin:/usr/bin:/usr/sbin:/sbin';
 

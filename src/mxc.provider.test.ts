@@ -17,7 +17,7 @@ import { promisify } from 'node:util';
 import type {
 	ProcessRequest,
 	SandboxProvider
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 import { defineSandboxProviderTests } from 'pi-bring-your-own-sandbox/testing';
 import { assert, expect } from 'vitest';
 
@@ -27,9 +27,10 @@ import {
 	startDescendant,
 	verifyDescendantStopped
 } from './fixtures/descendant-lock.js';
-import { EFFECTIVE_POLICY } from './policy.js';
+import { defaultPolicy } from './fixtures/profiles.js';
 import { provider } from './provider.js';
 import { prepareRuntime } from './runtime.js';
+import { quote } from './shell.js';
 import type { JobAllocation } from './supervisor/client.js';
 import { SupervisorJob } from './supervisor/client.js';
 
@@ -159,7 +160,13 @@ defineSandboxProviderTests({
 		const temporary = await mkdtemp(
 			path.join(tmpdir(), 'pi-byos-mxc-contract-')
 		);
-		const workspace = await realpath(temporary);
+		const root = await realpath(temporary);
+		const workspace = path.join(root, 'workspace');
+		const outside = path.join(root, 'outside');
+
+		await mkdir(workspace);
+		await writeFile(outside, 'host-only');
+
 		const resources = new Set<string>();
 		const probe = {
 			exit: { kind: 'code', code: 7 },
@@ -251,7 +258,7 @@ defineSandboxProviderTests({
 				entries: [{ name: 'data', kind: 'file' }]
 			},
 			hostWorkspace: workspace,
-			policy: EFFECTIVE_POLICY,
+			policy: defaultPolicy,
 			shells: {
 				sh: { ...probe, request: { kind: 'shell', dialect: 'sh', command } },
 				bash: { ...probe, request: { kind: 'shell', dialect: 'bash', command } }
@@ -264,6 +271,30 @@ defineSandboxProviderTests({
 				},
 				ready: new TextEncoder().encode('ready'),
 				verifyStopped: () => verifyStopped(workspace)
+			},
+			async verifyPolicy(backend, context) {
+				const output: Uint8Array[] = [];
+				const result = await backend.exec(
+					shell(
+						`cat /etc/hosts >/dev/null && printf system; cat ${quote(outside)} 2>/dev/null; true`
+					),
+					{
+						...context,
+						onOutput(chunk) {
+							if (chunk.stream === 'stdout') {
+								output.push(chunk.data);
+							}
+						}
+					}
+				);
+
+				expect({
+					result,
+					output: Buffer.concat(output).toString()
+				}).toStrictEqual({
+					result: { kind: 'exited', exit: { kind: 'code', code: 0 } },
+					output: 'system'
+				});
 			},
 			async verifyDisposed() {
 				await verifyOwnedProcesses(workspace);
@@ -296,7 +327,7 @@ defineSandboxProviderTests({
 				expect(remaining).toStrictEqual([]);
 				allocations.delete(workspace);
 				jobs.delete(workspace);
-				await rm(workspace, { recursive: true, force: true });
+				await rm(root, { recursive: true, force: true });
 			}
 		};
 	}

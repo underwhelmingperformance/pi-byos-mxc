@@ -108,6 +108,7 @@ export function memoryHost(
 
 			return metadata(stats, sockets.has(String(canonical)));
 		},
+		symlink: (target, filename) => volume.symlink(target, filename),
 		unlink: (filename) => volume.unlink(filename),
 		writeFile: (filename, data, options) =>
 			volume.writeFile(filename, data, options)

@@ -12,14 +12,10 @@ import {
 } from './fixtures/descendant-lock.js';
 import { InjectedFailure } from './fixtures/errors.js';
 import { nodeCommand, withNativeSandbox } from './fixtures/native-sandbox.js';
-import { nodeReadonlyPaths } from './fixtures/node-runtime.js';
-
-const nodePaths = await nodeReadonlyPaths();
-
-const nodeConfig = { readonlyPaths: [...nodePaths] };
+import { defaultPolicy } from './fixtures/profiles.js';
 
 it('drains binary output beyond the shared capture limit', async () => {
-	await withNativeSandbox(nodeConfig, async (sandbox) => {
+	await withNativeSandbox({}, async (sandbox) => {
 		let streamed = 0;
 		const result = await sandbox.exec(
 			{
@@ -158,7 +154,7 @@ it('blocks direct host-loopback TCP despite a host-reachable listener', async ()
 
 			socket.on('error', reject);
 		});
-		await withNativeSandbox(nodeConfig, async (sandbox) => {
+		await withNativeSandbox({}, async (sandbox) => {
 			const script = `const net=require('node:net');const s=net.createConnection({host:'127.0.0.1',port:${String(address.port)}});s.once('connect',()=>{console.log('connected');s.end();});s.once('error',()=>console.log('blocked'));s.setTimeout(1000,()=>{s.destroy();console.log('blocked');});`;
 			const result = await sandbox.exec({
 				kind: 'shell',
@@ -190,41 +186,45 @@ it('blocks direct host-loopback TCP despite a host-reachable listener', async ()
 });
 
 it('discloses the filesystem-accessible UNIX socket relay exception', async () => {
-	await withNativeSandbox(nodeConfig, async (sandbox, workspace) => {
-		const socketPath = path.join(workspace, 'relay.sock');
-		const server = createServer((socket) => socket.end('relay'));
-		const listening = once(server, 'listening');
+	await withNativeSandbox(
+		{},
+		async (sandbox, workspace) => {
+			const socketPath = path.join(workspace, 'relay.sock');
+			const server = createServer((socket) => socket.end('relay'));
+			const listening = once(server, 'listening');
 
-		server.listen(socketPath);
-		await listening;
+			server.listen(socketPath);
+			await listening;
 
-		try {
-			const script = `const s=require('node:net').createConnection(${JSON.stringify(socketPath)});s.on('data',d=>process.stdout.write(d));s.on('error',e=>{console.error(e.message);process.exitCode=1;});`;
-			const result = await sandbox.exec({
-				kind: 'shell',
-				dialect: 'sh',
-				command: nodeCommand(script)
-			});
-
-			expect({ ...result, durationMs: 0 }).toStrictEqual({
-				exit: { kind: 'code', code: 0 },
-				stdout: new TextEncoder().encode('relay'),
-				stderr: new Uint8Array(),
-				omittedBytes: { stdout: 0, stderr: 0 },
-				durationMs: 0
-			});
-		} finally {
-			await new Promise<void>((resolve, reject) => {
-				server.close((error) => {
-					if (error) {
-						reject(error);
-
-						return;
-					}
-
-					resolve();
+			try {
+				const script = `const s=require('node:net').createConnection(${JSON.stringify(socketPath)});s.on('data',d=>process.stdout.write(d));s.on('error',e=>{console.error(e.message);process.exitCode=1;});`;
+				const result = await sandbox.exec({
+					kind: 'shell',
+					dialect: 'sh',
+					command: nodeCommand(script)
 				});
-			});
-		}
-	});
+
+				expect({ ...result, durationMs: 0 }).toStrictEqual({
+					exit: { kind: 'code', code: 0 },
+					stdout: new TextEncoder().encode('relay'),
+					stderr: new Uint8Array(),
+					omittedBytes: { stdout: 0, stderr: 0 },
+					durationMs: 0
+				});
+			} finally {
+				await new Promise<void>((resolve, reject) => {
+					server.close((error) => {
+						if (error) {
+							reject(error);
+
+							return;
+						}
+
+						resolve();
+					});
+				});
+			}
+		},
+		{ policy: { ...defaultPolicy, network: process.platform === 'darwin' } }
+	);
 });

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 
-import type { SandboxOpenContext } from 'pi-bring-your-own-sandbox/api';
+import type { SandboxOpenContext } from 'pi-bring-your-own-sandbox/provider';
 
 export class SnapshotRefusalError extends Error {
 	override readonly name = 'SnapshotRefusalError';

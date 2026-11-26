@@ -1,16 +1,21 @@
 import { expect, it } from 'vitest';
 
 import { UnsupportedBackendError } from './errors.js';
+import { defaultPolicy } from './fixtures/profiles.js';
 import { thrown } from './fixtures/thrown.js';
-import { EFFECTIVE_POLICY, networkPolicy, resolveBackend } from './policy.js';
+import { networkMode, networkPolicy, resolveBackend } from './policy.js';
 
-it('describes delegated restrictions without claiming strict containment', () => {
-	expect(EFFECTIVE_POLICY).toStrictEqual({
-		workspaceAccess: 'read-write',
-		filesystemScope: 'provider-default',
-		networkAccess: 'provider-default'
-	});
-});
+it.each([
+	{ backend: 'seatbelt', network: false, expected: 'denied' },
+	{ backend: 'bubblewrap', network: false, expected: 'ip-denied' },
+	{ backend: 'seatbelt', network: true, expected: 'open-egress' },
+	{ backend: 'bubblewrap', network: true, expected: 'open-egress' }
+] as const)(
+	'selects $expected for $backend with network $network',
+	({ backend, network, expected }) => {
+		expect(networkMode(backend, { ...defaultPolicy, network })).toBe(expected);
+	}
+);
 
 it.each([
 	{ platform: 'darwin', selection: 'auto', expected: 'seatbelt' },

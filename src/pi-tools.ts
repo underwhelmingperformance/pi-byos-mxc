@@ -15,7 +15,8 @@ import {
 	createReadToolDefinition,
 	createWriteToolDefinition
 } from '@earendil-works/pi-coding-agent';
-import { getSandbox } from 'pi-bring-your-own-sandbox/api';
+import type { SandboxClient } from 'pi-bring-your-own-sandbox/consumer';
+import { createSandboxClient } from 'pi-bring-your-own-sandbox/consumer';
 import shellTools from 'pi-bring-your-own-sandbox/pi-tools';
 import type { TSchema } from 'typebox';
 
@@ -28,11 +29,13 @@ const worker = fileURLToPath(
 
 class PiTools {
 	readonly #pi: ExtensionAPI;
+	readonly #client: SandboxClient;
 	#context: ExtensionContext | undefined;
 	#mutations: Promise<void> = Promise.resolve();
 
-	constructor(pi: ExtensionAPI) {
+	constructor(pi: ExtensionAPI, client: SandboxClient) {
 		this.#pi = pi;
+		this.#client = client;
 		pi.on('session_start', (_event, context) => {
 			this.#context = context;
 		});
@@ -48,7 +51,7 @@ class PiTools {
 		signal?: AbortSignal
 	): Promise<unknown> {
 		const isMutation = name === 'write' || name === 'edit';
-		const sandbox = await getSandbox(this.#pi, context, {
+		const sandbox = await this.#client.get(context, {
 			capabilities: isMutation ? ['exec', 'files.write'] : ['exec'],
 			shells: ['sh']
 		});
@@ -218,11 +221,11 @@ class PiTools {
 
 export default function mxcTools(
 	pi: ExtensionAPI,
-	extensionPath = fileURLToPath(import.meta.url)
+	extensionPath = import.meta.filename
 ): void {
 	shellTools(pi, extensionPath);
 
-	const tools = new PiTools(pi);
+	const tools = new PiTools(pi, createSandboxClient(pi, extensionPath));
 
 	tools.register(createReadToolDefinition('/unused'), toolResult);
 	tools.register(createWriteToolDefinition('/unused'), (data) => ({

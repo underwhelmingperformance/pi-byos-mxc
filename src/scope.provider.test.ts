@@ -3,20 +3,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import type { ProcessResult } from 'pi-bring-your-own-sandbox/api';
-import {
-	getSandbox,
-	initialiseSandboxHost
-} from 'pi-bring-your-own-sandbox/api';
+import type { ProcessResult } from 'pi-bring-your-own-sandbox/consumer';
+import { createSandboxClient } from 'pi-bring-your-own-sandbox/consumer';
+import { initialiseSandboxHost } from 'pi-bring-your-own-sandbox/host';
 import { assert, expect, it } from 'vitest';
 
 import mxc from './extension.js';
 import { CommandChecks } from './fixtures/command-checks.js';
-import { nodeReadonlyPaths } from './fixtures/node-runtime.js';
 import { withPiRuntime } from './fixtures/pi-runtime.js';
 import { ScopedChild } from './fixtures/scoped-child.js';
-
-const nodePaths = await nodeReadonlyPaths();
 
 async function observeExecution(
 	running: Promise<ProcessResult>
@@ -34,7 +29,7 @@ async function observeExecution(
 it('preserves the declared boundary when a waiting child changes session across disposal', async () => {
 	const canaries = await mkdtemp(path.join(tmpdir(), 'pi-byos-mxc-scope-'));
 	const outside = path.join(canaries, 'outside');
-	const readonly = path.join(canaries, 'readonly');
+	let readonly = '';
 	const checks = new CommandChecks();
 
 	let probe: ScopedChild | undefined;
@@ -42,7 +37,6 @@ it('preserves the declared boundary when a waiting child changes session across 
 	let oldBackend: string | undefined;
 
 	await writeFile(outside, 'private');
-	await writeFile(readonly, 'read-only');
 
 	try {
 		await withPiRuntime(
@@ -50,19 +44,21 @@ it('preserves the declared boundary when a waiting child changes session across 
 				{
 					name: 'host',
 					factory(pi) {
-						initialiseSandboxHost(pi, {});
+						initialiseSandboxHost(pi, import.meta.filename, {});
 					}
 				},
 				{ name: 'mxc', factory: mxc },
 				{
 					name: 'scope-consumer',
 					factory(pi) {
+						const client = createSandboxClient(pi, import.meta.filename);
+
 						pi.registerCommand('verify-scope', {
 							description:
 								'Verify scoped termination across session replacement.',
 							handler: (phase, context) =>
 								checks.run(async () => {
-									const sandbox = await getSandbox(pi, context, {
+									const sandbox = await client.get(context, {
 										terminationScope: 'process-group',
 										timeoutMs: 10_000
 									});
@@ -179,14 +175,13 @@ it('preserves the declared boundary when a waiting child changes session across 
 			},
 			{
 				async prepare(workspace, personal) {
+					readonly = path.join(workspace, 'readonly');
+					await writeFile(readonly, 'read-only');
 					probe = new ScopedChild(workspace, outside, readonly);
 					await writeFile(
-						path.join(personal, 'byos.json'),
+						path.join(personal, 'mxc-sandbox.json'),
 						JSON.stringify({
-							provider: 'mxc',
-							providerConfig: {
-								readonlyPaths: [...nodePaths, readonly]
-							},
+							protectPaths: ['readonly'],
 							cleanup: {
 								cancellationGraceMs: 10_000,
 								disposalTimeoutMs: 15_000

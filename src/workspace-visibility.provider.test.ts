@@ -4,7 +4,6 @@ import path from 'node:path';
 import { expect, it } from 'vitest';
 
 import { withNativeSandbox } from './fixtures/native-sandbox.js';
-import { EFFECTIVE_POLICY } from './policy.js';
 
 it('shares atomic host replacements with a running shell and file tools', async () => {
 	await withNativeSandbox({}, async (sandbox, workspace) => {
@@ -86,10 +85,6 @@ it('protects a host replacement on the next tool call', async () => {
 			expect(contents).toStrictEqual(['host edit', 'saved']);
 		},
 		{
-			policy: {
-				...EFFECTIVE_POLICY,
-				workspaceProtection: [{ kind: 'path', path: '.envrc' }]
-			},
 			prepareWorkspace: async (workspace) =>
 				writeFile(path.join(workspace, '.envrc'), 'original')
 		}

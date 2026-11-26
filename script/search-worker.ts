@@ -5,7 +5,7 @@ import { lstat, open } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import type { GrepMatch } from 'pi-bring-your-own-sandbox/api';
+import type { GrepMatch } from 'pi-bring-your-own-sandbox/provider';
 import { RE2JS } from 're2js';
 
 import { compareText } from '../src/paths.js';

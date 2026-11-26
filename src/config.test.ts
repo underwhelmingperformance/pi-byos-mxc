@@ -5,12 +5,11 @@ import { InvalidSettingsError } from './errors.js';
 import { thrown } from './fixtures/thrown.js';
 
 describe('MXC configuration', () => {
-	it('uses explicit offline defaults without host environment inheritance', () => {
+	it('uses explicit runtime defaults without host environment inheritance', () => {
 		expect(validateConfig({})).toStrictEqual({
 			backend: 'auto',
-			network: 'ip-denied',
 			shells: { sh: '/bin/sh', bash: '/bin/bash' },
-			readonlyPaths: [],
+			protectPaths: [],
 			environment: {}
 		});
 	});
@@ -18,29 +17,27 @@ describe('MXC configuration', () => {
 	it('snapshots and freezes validated provider settings', () => {
 		const input = {
 			backend: 'seatbelt',
-			network: 'open-egress',
 			shells: { sh: '/bin/sh' },
-			readonlyPaths: ['/opt/tools'],
+			protectPaths: ['tools'],
 			environment: { PATH: '/opt/tools/bin', VALUE: 'literal $HOME' }
 		};
 		const result = validateConfig(input);
 
-		input.readonlyPaths.push('/private');
+		input.protectPaths.push('private');
 		input.environment.VALUE = 'changed';
 		expect({
 			result,
 			frozen: [
 				result,
 				result.shells,
-				result.readonlyPaths,
+				result.protectPaths,
 				result.environment
 			].map((value) => Object.isFrozen(value))
 		}).toStrictEqual({
 			result: {
 				backend: 'seatbelt',
-				network: 'open-egress',
-				shells: { sh: '/bin/sh' },
-				readonlyPaths: ['/opt/tools'],
+				shells: { sh: '/bin/sh', bash: '/bin/bash' },
+				protectPaths: ['tools'],
 				environment: { PATH: '/opt/tools/bin', VALUE: 'literal $HOME' }
 			},
 			frozen: [true, true, true, true]
@@ -50,10 +47,10 @@ describe('MXC configuration', () => {
 	it.each<{ input: unknown; paths: string[] }>([
 		{ input: { network: 'unrestricted' }, paths: ['/network'] },
 		{ input: { backend: 'process' }, paths: ['/backend'] },
-		{ input: { readonlyPaths: ['relative'] }, paths: ['/readonlyPaths/0'] },
+		{ input: { protectPaths: ['../relative'] }, paths: ['/protectPaths/0'] },
 		{
-			input: { readonlyPaths: ['/valid\0invalid'] },
-			paths: ['/readonlyPaths/0']
+			input: { protectPaths: ['/valid\0invalid'] },
+			paths: ['/protectPaths/0']
 		},
 		{ input: { shells: { sh: 'sh' } }, paths: ['/shells/sh'] },
 		{ input: { shells: { bash: '/bin/bash' } }, paths: ['/shells'] },

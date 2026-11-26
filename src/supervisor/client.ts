@@ -9,12 +9,12 @@ import type {
 	BackendProcessContext,
 	BackendProcessOutcome,
 	ProcessExit
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 import {
 	InvalidSandboxRequestError,
 	SandboxOperationError,
 	SandboxTransportError
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 
 import type { Clock } from '../clock.js';
 import { systemClock } from '../clock.js';

@@ -16,16 +16,17 @@ import type {
 	SandboxCopySource,
 	SandboxOpenContext,
 	SandboxOpenRequest
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 import { assert, expect, it, vi } from 'vitest';
 
 import { validateConfig } from './config.js';
 import { cleanupControl } from './fixtures/cleanup.js';
 import { withNativeSandbox } from './fixtures/native-sandbox.js';
+import { defaultPolicy, fixtureProfile } from './fixtures/profiles.js';
 import { provider } from './provider.js';
 
 it.runIf(process.platform === 'darwin')(
-	'keeps independent read-only copies of the host and live MXC destination',
+	'keeps independent writable copies of the host and live MXC destination',
 	async () => {
 		const workspace = await mkdtemp(path.join(tmpdir(), 'mxc-review-project-'));
 		const context: SandboxOpenContext = {
@@ -43,28 +44,19 @@ it.runIf(process.platform === 'darwin')(
 			sessionId: 'test',
 			hostWorkspace: workspace,
 			configuration: validateConfig({}),
-			policy: {
-				workspaceAccess: 'read-write',
-				filesystemScope: 'provider-default',
-				networkAccess: 'provider-default'
-			} as const
+			profile: fixtureProfile()
 		};
 		const allocated: SandboxBackend[] = [];
 		const copy = provider.copy;
 
 		assert.isDefined(copy);
 
-		const policy = {
-			workspaceRelationship: 'copied',
-			workspaceAccess: 'read-only',
-			filesystemScope: 'system-read-only',
-			networkAccess: 'denied'
-		} as const;
+		const profile = fixtureProfile({}, 'darwin', 'copy');
 		const review = (
 			source: SandboxCopySource
 		): SandboxOpenRequest<ReturnType<typeof validateConfig>> & {
 			source: SandboxCopySource;
-		} => ({ ...request, generationId: 'review', policy, source });
+		} => ({ ...request, generationId: 'review', profile, source });
 		const host = review({ kind: 'host' });
 		const file = path.join(workspace, 'notes');
 		const locked = path.join(workspace, 'locked');
@@ -76,7 +68,13 @@ it.runIf(process.platform === 'darwin')(
 			await writeFile(file, 'draft');
 			await expect(
 				copy(
-					{ ...host, policy: { ...policy, filesystemScope: 'workspace-only' } },
+					{
+						...host,
+						profile: {
+							...profile,
+							policy: { ...profile.policy, hostSystemFiles: 'denied' }
+						}
+					},
 					context
 				)
 			).rejects.toMatchObject({ name: 'UnsupportedSandboxPolicyError' });
@@ -107,9 +105,11 @@ it.runIf(process.platform === 'darwin')(
 			const firstPath = path.join(first.workspace.root, 'notes');
 			const secondPath = path.join(second.workspace.root, 'notes');
 
-			await expect(
-				first.files.write.writeFile(firstPath, Buffer.from('change'), context)
-			).rejects.toMatchObject({ name: 'SandboxPermissionDeniedError' });
+			await first.files.write.writeFile(
+				firstPath,
+				Buffer.from('change'),
+				context
+			);
 
 			const shell: Buffer[] = [];
 
@@ -136,8 +136,8 @@ it.runIf(process.platform === 'darwin')(
 				host: await readFile(file, 'utf8')
 			}).toStrictEqual({
 				relationship: 'copied',
-				original: 'draft',
-				shell: 'draft',
+				original: 'change',
+				shell: 'change',
 				updated: 'saved',
 				host: 'newer'
 			});
@@ -202,79 +202,69 @@ it.runIf(process.platform === 'darwin')(
 );
 
 it.runIf(process.platform === 'darwin').each([
-	{
-		needs: ['workspace-writes'],
-		filesystemScope: 'system-read-only',
-		networkAccess: 'denied'
-	},
-	{
-		needs: ['workspace-writes', 'network', 'host-user-data'],
-		filesystemScope: 'provider-default',
-		networkAccess: 'provider-default'
-	}
+	{ network: false, requirement: 'prevented' },
+	{ network: true, requirement: 'needed' }
 ] as const)(
-	'copies writes from the parent allocation with $needs',
-	async ({ needs, filesystemScope, networkAccess }) => {
-		await withNativeSandbox({}, async (editor, workspace) => {
-			const file = path.join(workspace, 'notes');
+	'copies writes from the parent allocation with network $network',
+	async ({ network, requirement }) => {
+		await withNativeSandbox(
+			{ protectPaths: ['protected'] },
+			async (editor, workspace) => {
+				const file = path.join(workspace, 'notes');
 
-			await writeFile(file, 'host');
+				await writeFile(file, 'host');
 
-			const parent = await editor.copy({
-				needs,
-				workspaceProtection: [{ kind: 'path', path: 'protected' }]
-			});
-
-			try {
-				const local = path.join(parent.sandbox.workspace.root, 'notes');
-
-				await parent.sandbox.files.writeFile(local, Buffer.from('parent'));
-				await expect(
-					parent.sandbox.files.writeFile(
-						path.join(parent.sandbox.workspace.root, 'protected'),
-						Buffer.from('edit')
-					)
-				).rejects.toMatchObject({ name: 'SandboxPermissionDeniedError' });
-
-				const child = await parent.sandbox.copy();
+				const parent = await editor.copy({
+					access: { hostWorkspaceWrites: 'prevented', network: requirement }
+				});
 
 				try {
-					await parent.sandbox.files.writeFile(local, Buffer.from('later'));
+					const local = path.join(parent.sandbox.workspace.root, 'notes');
 
-					const content = await child.sandbox.files.readFile(
-						path.join(child.sandbox.workspace.root, 'notes')
-					);
+					await parent.sandbox.files.writeFile(local, Buffer.from('parent'));
+					await expect(
+						parent.sandbox.files.writeFile(
+							path.join(parent.sandbox.workspace.root, 'protected'),
+							Buffer.from('edit')
+						)
+					).rejects.toMatchObject({ name: 'SandboxPermissionDeniedError' });
 
-					expect({
-						parentDescription: parent.sandbox.workspace.description,
-						childDescription: child.sandbox.workspace.description,
-						parent: parent.sandbox.policy,
-						child: child.sandbox.policy,
-						copied: Buffer.from(content).toString(),
-						host: await readFile(file, 'utf8')
-					}).toMatchObject({
-						parentDescription:
-							'Private writable workspace copy. Changes stay in the copy until disposal.',
-						childDescription: 'Private read-only workspace copy.',
-						parent: {
-							workspaceAccess: 'read-write',
-							networkAccess,
-							filesystemScope
-						},
-						child: {
-							workspaceAccess: 'read-only',
-							networkAccess: 'denied',
-							filesystemScope: 'system-read-only'
-						},
-						copied: 'parent',
-						host: 'host'
+					const child = await parent.sandbox.copy({
+						access: { network: 'prevented' }
 					});
+
+					try {
+						await parent.sandbox.files.writeFile(local, Buffer.from('later'));
+
+						const content = await child.sandbox.files.readFile(
+							path.join(child.sandbox.workspace.root, 'notes')
+						);
+
+						expect({
+							parentDescription: parent.sandbox.workspace.description,
+							childDescription: child.sandbox.workspace.description,
+							parent: parent.sandbox.policy,
+							child: child.sandbox.policy,
+							copied: Buffer.from(content).toString(),
+							host: await readFile(file, 'utf8')
+						}).toMatchObject({
+							parentDescription:
+								'Private writable workspace copy. Changes stay in the copy until disposal.',
+							childDescription:
+								'Private writable workspace copy. Changes stay in the copy until disposal.',
+							parent: { ...defaultPolicy, hostWorkspaceWrites: false, network },
+							child: { ...defaultPolicy, hostWorkspaceWrites: false },
+							copied: 'parent',
+							host: 'host'
+						});
+					} finally {
+						await child.close();
+					}
 				} finally {
-					await child.close();
+					await parent.close();
 				}
-			} finally {
-				await parent.close();
-			}
-		});
+			},
+			{ policy: { ...defaultPolicy, network } }
+		);
 	}
 );

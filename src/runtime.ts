@@ -2,14 +2,12 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type {
-	SandboxOpenContext,
-	ShellDialect
-} from 'pi-bring-your-own-sandbox/api';
+import type { ShellDialect } from 'pi-bring-your-own-sandbox/provider';
 
 import type { MxcConfig } from './config.js';
 import {
 	ShellNotFileError,
+	ShellStartupError,
 	UnsupportedRuntimeError,
 	WorkspaceNotDirectoryError
 } from './errors.js';
@@ -26,10 +24,7 @@ export interface MxcRuntime {
 	readonly searchDirectories?: readonly string[];
 	readonly workspace: string;
 	readonly readonlyPaths: readonly string[];
-	/**
-	Canonical grants and shells from the MXC settings.
-	*/
-	readonly configuredPaths: readonly string[];
+	readonly protectedPaths: readonly string[];
 	readonly shells: ReadonlyMap<ShellDialect, string>;
 	readonly backend: 'seatbelt' | 'bubblewrap';
 }
@@ -67,7 +62,6 @@ async function executable(
 export async function prepareRuntime(
 	workspace: string,
 	config: MxcConfig,
-	context: SandboxOpenContext,
 	options: RuntimeOptions = DEFAULT_OPTIONS
 ): Promise<MxcRuntime> {
 	const { fs, environment } = options.host;
@@ -92,13 +86,7 @@ export async function prepareRuntime(
 	}
 
 	const entry = await fs.realpath(options.supervisor);
-	const configuredPaths = await Promise.all(
-		config.readonlyPaths.map((filename) => fs.realpath(filename))
-	);
-	const readonlyPaths = [
-		...(await systemReadonlyPaths(environment.platform, fs)),
-		...configuredPaths
-	];
+	const readonlyPaths = await systemReadonlyPaths(environment.platform, fs);
 	const search =
 		environment.platform === 'darwin' && config.environment.PATH === undefined
 			? await options.searchTools?.(canonicalWorkspace)
@@ -111,19 +99,13 @@ export async function prepareRuntime(
 		)),
 		node
 	];
-	const shells = new Map<ShellDialect, string>([
-		['sh', await executable(fs, config.shells.sh)]
-	]);
+	const shells = new Map<ShellDialect, string>();
 
-	if (config.shells.bash !== undefined) {
+	for (const dialect of ['sh', 'bash'] as const) {
 		try {
-			shells.set('bash', await executable(fs, config.shells.bash));
-		} catch {
-			context.reportDiagnostic({
-				level: 'warning',
-				message:
-					'The configured Bash executable is unavailable. MXC will offer sh only.'
-			});
+			shells.set(dialect, await executable(fs, config.shells[dialect]));
+		} catch (error) {
+			throw new ShellStartupError(dialect, { cause: error });
 		}
 	}
 
@@ -136,6 +118,7 @@ export async function prepareRuntime(
 	return {
 		entry,
 		workspace: canonicalWorkspace,
+		protectedPaths,
 		...(search && { searchDirectories: search.directories }),
 		readonlyPaths: [
 			...readonlyPaths,
@@ -144,7 +127,6 @@ export async function prepareRuntime(
 			path.resolve(path.dirname(entry), '../tools'),
 			...(search?.files ?? [])
 		],
-		configuredPaths: [...configuredPaths, ...shells.values()],
 		shells,
 		backend
 	};

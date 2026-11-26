@@ -16,20 +16,17 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
-import type { SandboxOpenContext } from 'pi-bring-your-own-sandbox/api';
+import type { SandboxOpenContext } from 'pi-bring-your-own-sandbox/provider';
 import { assert, expect, it } from 'vitest';
 
 import { MxcBackend } from './backend.js';
 import { validateConfig } from './config.js';
 import { cleanupControl } from './fixtures/cleanup.js';
 import { nodeCommand } from './fixtures/native-sandbox.js';
-import { nodeReadonlyPaths } from './fixtures/node-runtime.js';
-import { EFFECTIVE_POLICY } from './policy.js';
+import { fixtureProfile } from './fixtures/profiles.js';
 import { prepareRuntime } from './runtime.js';
 import type { JobAllocation } from './supervisor/client.js';
 import { SupervisorJob } from './supervisor/client.js';
-
-const nodePaths = await nodeReadonlyPaths();
 
 const execute = promisify(execFile);
 
@@ -116,10 +113,8 @@ it('retains recovery after hard supervisor death even when the platform stops th
 				generationId: randomUUID(),
 				sessionId: 'crash-test',
 				hostWorkspace: workspace,
-				policy: EFFECTIVE_POLICY,
-				configuration: validateConfig({
-					readonlyPaths: [...nodePaths]
-				})
+				profile: fixtureProfile(),
+				configuration: validateConfig({})
 			},
 			context,
 			{

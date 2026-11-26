@@ -5,13 +5,13 @@ import type {
 	FindRequest,
 	GrepRequest,
 	SandboxOperationContext
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 import {
 	SandboxCancelledError,
 	SandboxOperationError,
 	SandboxPathNotFoundError,
 	SandboxPermissionDeniedError
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 import { Type } from 'typebox';
 import { Compile } from 'typebox/compile';
 

@@ -4,41 +4,46 @@ import { Compile } from 'typebox/compile';
 
 import { InvalidSettingsError } from './errors.js';
 
-export const absolutePath = Type.String({ pattern: '^/[^\\u0000]*$' });
+const absolutePath = Type.String({ pattern: '^/[^\\u0000]*$' });
 
 const text = Type.String({ pattern: '^[^\\u0000]*$' });
 
-export const shellsSchema = Type.Object(
+const shellsSchema = Type.Object(
 	{ sh: absolutePath, bash: Type.Optional(absolutePath) },
 	{ additionalProperties: false }
 );
-export const environmentSchema = Type.Record(
+const environmentSchema = Type.Record(
 	Type.String({ pattern: '^[^=\\u0000]+$' }),
 	text,
 	{ additionalProperties: false }
 );
 
-const schema = Type.Object(
+const protectedPath = Type.String({
+	pattern: String.raw`^(?!/)(?!.*//)(?!.*/$)(?!(?:.*/)?\.{1,2}(?:/|$))[^\\:\u0000]+$`
+});
+
+export const configSchema = Type.Object(
 	{
 		backend: Type.Optional(Type.Enum(['auto', 'seatbelt', 'bubblewrap'])),
-		network: Type.Optional(Type.Enum(['ip-denied', 'open-egress'])),
-		shells: Type.Optional(shellsSchema),
-		readonlyPaths: Type.Optional(
-			Type.Array(absolutePath, { uniqueItems: true })
+		protectPaths: Type.Optional(
+			Type.Array(protectedPath, { uniqueItems: true })
 		),
+		shells: Type.Optional(shellsSchema),
 		environment: Type.Optional(environmentSchema)
 	},
 	{ additionalProperties: false }
 );
-const validator = Compile(schema);
 
-type MxcSettings = Static<typeof schema>;
+const validator = Compile(configSchema);
 
-export type MxcConfig = {
-	readonly [Key in keyof MxcSettings]-?: Readonly<
-		Exclude<MxcSettings[Key], undefined>
-	>;
-};
+export type MxcSettings = Static<typeof configSchema>;
+
+export interface MxcConfig {
+	readonly backend: NonNullable<MxcSettings['backend']>;
+	readonly protectPaths: readonly string[];
+	readonly shells: Readonly<{ sh: string; bash: string }>;
+	readonly environment: Readonly<NonNullable<MxcSettings['environment']>>;
+}
 
 /**
 Returns JSON pointers to the most specific invalid values in `input`. TypeBox
@@ -67,11 +72,11 @@ export function validateConfig(input: unknown): MxcConfig {
 
 	return Object.freeze({
 		backend: input.backend ?? 'auto',
-		network: input.network ?? 'ip-denied',
+		protectPaths: Object.freeze([...(input.protectPaths ?? [])]),
 		shells: Object.freeze({
-			...(input.shells ?? { sh: '/bin/sh', bash: '/bin/bash' })
+			sh: input.shells?.sh ?? '/bin/sh',
+			bash: input.shells?.bash ?? '/bin/bash'
 		}),
-		readonlyPaths: Object.freeze([...(input.readonlyPaths ?? [])]),
 		environment: Object.freeze({ ...input.environment })
 	});
 }

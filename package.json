@@ -51,7 +51,7 @@
 	},
 	"dependencies": {
 		"@microsoft/mxc-sdk": "1.0.1",
-		"pi-bring-your-own-sandbox": "github:underwhelmingperformance/pi-bring-your-own-sandbox#797305b52b2c32571560c7d83e243418e4460113&path:/packages/sdk",
+		"pi-bring-your-own-sandbox": "github:underwhelmingperformance/pi-bring-your-own-sandbox#9608733fac07dab26dc82c0260dc501d70b11be3&path:/packages/sdk",
 		"re2js": "^2.10.0"
 	},
 	"devDependencies": {

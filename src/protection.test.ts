@@ -1,4 +1,3 @@
-import type { WorkspaceProtection } from 'pi-bring-your-own-sandbox/api';
 import { expect, it } from 'vitest';
 
 import {
@@ -11,6 +10,7 @@ import {
 } from './errors.js';
 import { memoryHost } from './fixtures/host.js';
 import type { Protection } from './protection.js';
+import type { WorkspaceProtection } from './protection.js';
 import { planProtection } from './protection.js';
 
 const workspace = '/workspace';

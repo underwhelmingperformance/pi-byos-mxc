@@ -26,7 +26,7 @@ export interface HostFileSystem {
 	access(filename: string, mode?: number): Promise<void>;
 	mkdir(
 		directory: string,
-		options: { readonly mode: number }
+		options: { readonly mode: number; readonly recursive?: boolean }
 	): Promise<unknown>;
 	readFile(filename: string, encoding: 'utf8'): Promise<string>;
 	realpath(filename: string): Promise<string>;
@@ -39,6 +39,7 @@ export interface HostFileSystem {
 	readdir(directory: string): Promise<string[]>;
 	readlink(filename: string): Promise<string>;
 	stat(filename: string): Promise<FileMetadata>;
+	symlink(target: string, filename: string): Promise<void>;
 	unlink(filename: string): Promise<void>;
 	writeFile(
 		filename: string,

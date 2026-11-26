@@ -3,12 +3,12 @@ import path from 'node:path';
 import type {
 	RecoveryDescriptor,
 	SandboxOpenContext
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 import {
 	SandboxCleanupError,
 	SandboxSessionClosingError,
 	SandboxStartupError
-} from 'pi-bring-your-own-sandbox/api';
+} from 'pi-bring-your-own-sandbox/provider';
 
 import {
 	AllocationCancelledError,
