@@ -21,6 +21,21 @@ struct entry {
 static size_t entries;
 static uint64_t bytes;
 
+enum snapshot_refusal {
+  ENTRY_LIMIT = 2,
+  DEPTH_LIMIT,
+  BYTE_LIMIT,
+  ABSOLUTE_LINK,
+  UNRESOLVED_LINK,
+  CROSSES_MOUNT,
+  RESTRICTED_FLAGS,
+  SPECIAL_FILE,
+  HARD_LINK,
+  SOURCE_CHANGED,
+  PATH_LIMIT,
+  CLONE_UNAVAILABLE,
+};
+
 static int unchanged(const struct stat *a, const struct stat *b) {
   return a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
          a->st_mode == b->st_mode && a->st_nlink == b->st_nlink &&
@@ -34,8 +49,10 @@ static int unchanged(const struct stat *a, const struct stat *b) {
 static struct entry *copy_entry(int source, int target, const char *name,
                                 const char *output, unsigned depth,
                                 dev_t volume) {
-  if (++entries > 100000 || depth > 128)
-    errx(1, "Workspace exceeds the snapshot entry or depth limit");
+  if (++entries > 100000)
+    errx(ENTRY_LIMIT, "Workspace exceeds the snapshot entry limit");
+  if (depth > 128)
+    errx(DEPTH_LIMIT, "Workspace exceeds the snapshot depth limit");
 
   struct entry *item = calloc(1, sizeof(*item));
   if (!item || !(item->name = strdup(name)))
@@ -44,40 +61,47 @@ static struct entry *copy_entry(int source, int target, const char *name,
   if (fstatat(source, name, st, AT_SYMLINK_NOFOLLOW))
     err(1, "inspect snapshot source");
   if (st->st_dev != volume)
-    errx(1, "Snapshot source crosses a mount");
+    errx(CROSSES_MOUNT, "Snapshot source crosses a mount");
 
   if (st->st_flags & (UF_IMMUTABLE | UF_APPEND | SF_IMMUTABLE | SF_APPEND))
-    errx(1, "Snapshot contains an immutable or append-only entry");
+    errx(RESTRICTED_FLAGS, "Snapshot contains an immutable or append-only entry");
 
   if (S_ISLNK(st->st_mode)) {
     char link[PATH_MAX];
     ssize_t size = readlinkat(source, name, link, sizeof(link));
-    if (size < 0 || (size_t)size >= sizeof(link))
-      errx(1, "Cannot read snapshot link");
+    if (size < 0)
+      err(1, "Read snapshot link");
+    if ((size_t)size >= sizeof(link))
+      errx(PATH_LIMIT, "Snapshot link exceeds the path length limit");
     link[size] = 0;
     if (link[0] == '/')
-      errx(1, "Snapshot contains an absolute symbolic link");
+      errx(ABSOLUTE_LINK, "Snapshot contains an absolute symbolic link");
     if (symlinkat(link, target, output))
       err(1, "copy snapshot link");
     return item;
   }
 
   if (!S_ISDIR(st->st_mode) && !S_ISREG(st->st_mode))
-    errx(1, "Snapshot contains a special file");
+    errx(SPECIAL_FILE, "Snapshot contains a special file");
   if (S_ISREG(st->st_mode) && st->st_nlink != 1)
-    errx(1, "Snapshot contains a multiply linked file");
+    errx(HARD_LINK, "Snapshot contains a multiply linked file");
   int fd = openat(source, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW |
                                (S_ISDIR(st->st_mode) ? O_DIRECTORY : 0));
   struct stat opened;
-  if (fd < 0 || fstat(fd, &opened) || !unchanged(st, &opened))
-    errx(1, "Snapshot source changed or is inaccessible");
+  if (fd < 0 || fstat(fd, &opened))
+    err(1, "Open snapshot source");
+  if (!unchanged(st, &opened))
+    errx(SOURCE_CHANGED, "Snapshot source changed");
 
   if (S_ISREG(st->st_mode)) {
     if (st->st_size < 0 || (uint64_t)st->st_size > 512ULL * 1024 * 1024 - bytes)
-      errx(1, "Snapshot exceeds 512 MiB");
+      errx(BYTE_LIMIT, "Snapshot exceeds 512 MiB");
     bytes += (uint64_t)st->st_size;
-    if (fclonefileat(fd, target, output, CLONE_NOOWNERCOPY))
+    if (fclonefileat(fd, target, output, CLONE_NOOWNERCOPY)) {
+      if (errno == EXDEV || errno == ENOTSUP)
+        err(CLONE_UNAVAILABLE, "Clone snapshot file");
       err(1, "clone snapshot file");
+    }
     close(fd);
     return item;
   }
@@ -112,11 +136,11 @@ static void verify(int parent, struct entry *item) {
   struct stat current;
   if (fstatat(parent, item->name, &current, AT_SYMLINK_NOFOLLOW) ||
       !unchanged(&item->metadata, &current))
-    errx(1, "Workspace changed while the snapshot was being copied");
+    errx(SOURCE_CHANGED, "Workspace changed while the snapshot was being copied");
   if (item->children) {
     int fd = openat(parent, item->name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
     if (fd < 0 || fstat(fd, &current) || !unchanged(&item->metadata, &current))
-      errx(1, "Snapshot directory changed");
+      errx(SOURCE_CHANGED, "Snapshot directory changed");
     for (struct entry *child = item->children; child; child = child->next)
       verify(fd, child);
     close(fd);
@@ -131,13 +155,13 @@ static void verify_links(const char *root, const char *directory,
     char pathname[PATH_MAX];
     if ((size_t)snprintf(pathname, sizeof(pathname), "%s/%s", directory,
                          item->name) >= sizeof(pathname))
-      errx(1, "Snapshot path exceeds the path length limit");
+      errx(PATH_LIMIT, "Snapshot path exceeds the path length limit");
     if (S_ISLNK(item->metadata.st_mode)) {
       char resolved[PATH_MAX];
       size_t length = strlen(root);
       if (!realpath(pathname, resolved) || strncmp(resolved, root, length) ||
           (resolved[length] != '/' && resolved[length] != 0))
-        errx(1, "Snapshot link does not resolve inside the copied directory");
+        errx(UNRESOLVED_LINK, "Snapshot link does not resolve inside the copied directory");
     } else {
       verify_links(root, pathname, item->children);
     }
@@ -156,7 +180,7 @@ int main(int argc, char **argv) {
   struct entry *manifest = copy_entry(AT_FDCWD, dest, argv[1], "workspace", 0, root.st_dev);
   char workspace[PATH_MAX];
   if ((size_t)snprintf(workspace, sizeof(workspace), "%s/workspace", argv[2]) >= sizeof(workspace))
-    errx(1, "Snapshot allocation path exceeds the path length limit");
+    errx(PATH_LIMIT, "Snapshot allocation path exceeds the path length limit");
   verify_links(workspace, workspace, manifest->children);
   verify(AT_FDCWD, manifest);
   return 0;

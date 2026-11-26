@@ -32,7 +32,7 @@ import {
 } from 'pi-bring-your-own-sandbox/api';
 
 import type { MxcConfig } from './config.js';
-import { copyWorkspace } from './copy-workspace.js';
+import { copyWorkspace, SnapshotRefusalError } from './copy-workspace.js';
 import { MxcConfigError, UnenforceablePolicyError } from './errors.js';
 import { sandboxFiles } from './files.js';
 import type { Host, HostFileSystem } from './host.js';
@@ -432,7 +432,8 @@ export class MxcBackend implements SandboxBackend {
 			context.reportDiagnostic({
 				level: 'warning',
 				message:
-					error instanceof MxcConfigError
+					error instanceof MxcConfigError ||
+					error instanceof SnapshotRefusalError
 						? error.message.slice(0, 2048)
 						: 'MXC opening failed. Check runtime availability, shell/toolchain grants and that the provider is installed outside the writable workspace.'
 			});
