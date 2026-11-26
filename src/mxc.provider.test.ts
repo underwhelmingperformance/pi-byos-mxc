@@ -243,7 +243,7 @@ defineSandboxProviderTests({
 				}
 			],
 			read: {
-				path: path.join(seeded, 'data'),
+				path: 'seeded/data',
 				bytes: data,
 				missingPath: path.join(seeded, 'missing')
 			},
@@ -296,7 +296,16 @@ defineSandboxProviderTests({
 					output: 'system'
 				});
 			},
-			async verifyDisposed() {
+			async verifyDisposed(backend, recovery) {
+				if (backend === undefined && recovery?.kind === 'none') {
+					expect({
+						resources: [...resources],
+						jobs: jobs.get(workspace)?.size
+					}).toStrictEqual({ resources: [], jobs: 0 });
+
+					return;
+				}
+
 				await verifyOwnedProcesses(workspace);
 
 				for (const resource of resources) {

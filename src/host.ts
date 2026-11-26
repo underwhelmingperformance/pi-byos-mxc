@@ -21,6 +21,11 @@ interface FileMetadata {
 	isSymbolicLink(): boolean;
 }
 
+type HostDirectoryEntry = Pick<
+	FileMetadata,
+	'isDirectory' | 'isFile' | 'isSymbolicLink'
+> & { readonly name: string };
+
 /**
 The host filesystem operations that the provider performs outside the sandbox.
 */
@@ -38,6 +43,7 @@ export interface HostFileSystem {
 		options: { readonly recursive: boolean; readonly force: boolean }
 	): Promise<void>;
 	lstat(filename: string): Promise<FileMetadata>;
+	readDirectoryEntries(directory: string): Promise<HostDirectoryEntry[]>;
 	readdir(directory: string): Promise<string[]>;
 	readlink(filename: string): Promise<string>;
 	stat(filename: string): Promise<FileMetadata>;
@@ -175,7 +181,11 @@ async function packageDirectory(
 }
 
 export const systemHost: Host = Object.freeze({
-	fs,
+	fs: {
+		...fs,
+		readDirectoryEntries: (directory: string) =>
+			fs.readdir(directory, { withFileTypes: true })
+	},
 	environment: Object.freeze({
 		platform: process.platform,
 		arch: process.arch,

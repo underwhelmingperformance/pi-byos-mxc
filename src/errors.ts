@@ -236,6 +236,16 @@ rejects the policy and reports the message to the user.
 */
 export abstract class UnenforceablePolicyError extends Error {}
 
+export class SpecialWorkspaceEntryError extends UnenforceablePolicyError {
+	override readonly name = 'SpecialWorkspaceEntryError';
+
+	constructor(filename: string) {
+		super(
+			`MXC cannot open the live checkout with the special file ${filename}. Remove sockets, FIFOs and device files before opening it.`
+		);
+	}
+}
+
 export class ShellStartupError extends MxcConfigError {
 	override readonly name = 'ShellStartupError';
 

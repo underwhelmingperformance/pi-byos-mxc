@@ -3,6 +3,7 @@ import type { SandboxDiagnostic } from 'pi-bring-your-own-sandbox/host';
 import type {
 	BackendProcessContext,
 	BackendProcessOutcome,
+	RecoveryDescriptor,
 	SandboxOpenContext,
 	SandboxPolicy
 } from 'pi-bring-your-own-sandbox/provider';
@@ -11,7 +12,8 @@ import {
 	SandboxOperationError,
 	SandboxPathNotFoundError,
 	SandboxStartupError,
-	SandboxTransportError
+	SandboxTransportError,
+	UnsupportedSandboxPolicyError
 } from 'pi-bring-your-own-sandbox/provider';
 import { expect, it } from 'vitest';
 
@@ -86,6 +88,8 @@ interface FixtureHost {
 	readonly sockets?: readonly string[];
 	readonly protectPaths?: readonly string[];
 	readonly abortBash?: boolean;
+	readonly reportRecovery?: SandboxOpenContext['reportRecovery'];
+	readonly reportDiagnostic?: SandboxOpenContext['reportDiagnostic'];
 }
 
 async function openBackend(
@@ -96,7 +100,9 @@ async function openBackend(
 		backend: native = 'seatbelt',
 		sockets = [],
 		protectPaths = [],
-		abortBash = false
+		abortBash = false,
+		reportRecovery,
+		reportDiagnostic
 	}: FixtureHost = {}
 ) {
 	const run = job.run ?? (() => Promise.resolve(exited));
@@ -107,7 +113,10 @@ async function openBackend(
 			sockets
 		}
 	);
-	const context = operationContext();
+	const context = operationContext({
+		...(reportRecovery && { reportRecovery }),
+		...(reportDiagnostic && { reportDiagnostic })
+	});
 	const backend = await MxcBackend.open(
 		{
 			generationId: 'test',
@@ -150,6 +159,39 @@ async function openBackend(
 
 	return { backend, context, memory };
 }
+
+it.each(['seatbelt', 'bubblewrap'] as const)(
+	'refuses a nested socket before allocating with %s',
+	async (backend) => {
+		const socket = '/workspace/nested/socket\u{1B}';
+		const recovery: RecoveryDescriptor[] = [];
+		const diagnostics: SandboxDiagnostic[] = [];
+
+		await expect(
+			openBackend(
+				{},
+				{
+					backend,
+					files: { [socket]: '' },
+					sockets: [socket],
+					reportRecovery(descriptor) {
+						recovery.push(descriptor);
+					},
+					reportDiagnostic(diagnostic) {
+						diagnostics.push(diagnostic);
+					}
+				}
+			)
+		).rejects.toBeInstanceOf(UnsupportedSandboxPolicyError);
+		expect(recovery).toStrictEqual([{ kind: 'none' }]);
+		expect(diagnostics).toStrictEqual([
+			{
+				level: 'warning',
+				message: String.raw`MXC cannot open the live checkout with the special file nested/socket\x1b. Remove sockets, FIFOs and device files before opening it.`
+			}
+		]);
+	}
+);
 
 function records(memory: ReturnType<typeof memoryHost>['memory']) {
 	return memory

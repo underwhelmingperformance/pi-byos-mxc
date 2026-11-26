@@ -56,7 +56,7 @@ import type { Protection } from './protection.js';
 import { HOST_CONFIGURATION_PROTECTION, planProtection } from './protection.js';
 import { RecoveryStore } from './recovery.js';
 import type { MxcRuntime } from './runtime.js';
-import { prepareRuntime } from './runtime.js';
+import { prepareRuntime, verifyWorkspaceEntries } from './runtime.js';
 import { sandboxSearch } from './search.js';
 import { SYSTEM_PATH, targetEnvironment } from './shell.js';
 import type { JobOptions } from './supervisor/client.js';
@@ -283,6 +283,14 @@ export class MxcBackend implements SandboxBackend {
 					operation: 'open',
 					providerId: 'mxc'
 				});
+			}
+
+			if (relationship === 'shared') {
+				await verifyWorkspaceEntries(
+					dependencies.host.fs,
+					runtime.workspace,
+					context.signal
+				);
 			}
 
 			store = await RecoveryStore.open(

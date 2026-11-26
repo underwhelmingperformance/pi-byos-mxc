@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { ShellDialect } from 'pi-bring-your-own-sandbox/provider';
+import { cleanDisplayText } from 'pi-bring-your-own-sandbox/provider';
 
 import type { MxcConfig } from './config.js';
 import {
@@ -10,6 +11,7 @@ import {
 	OverlappingPathsError,
 	ShellNotFileError,
 	ShellStartupError,
+	SpecialWorkspaceEntryError,
 	UnsupportedRuntimeError,
 	WorkspaceNotDirectoryError
 } from './errors.js';
@@ -45,6 +47,40 @@ const DEFAULT_OPTIONS: RuntimeOptions = Object.freeze({
 		new URL('../dist/supervisor/entry.js', import.meta.url)
 	)
 });
+
+export async function verifyWorkspaceEntries(
+	fs: HostFileSystem,
+	workspace: string,
+	signal: AbortSignal
+): Promise<void> {
+	const pending = [workspace];
+
+	for (
+		let directory = pending.pop();
+		directory !== undefined;
+		directory = pending.pop()
+	) {
+		signal.throwIfAborted();
+
+		const entries = await fs.readDirectoryEntries(directory);
+
+		for (const entry of entries) {
+			signal.throwIfAborted();
+
+			if (entry.isDirectory()) {
+				pending.push(path.join(directory, entry.name));
+				continue;
+			}
+
+			if (!entry.isFile() && !entry.isSymbolicLink()) {
+				const filename = path.join(directory, entry.name);
+				const relative = path.relative(workspace, filename);
+
+				throw new SpecialWorkspaceEntryError(cleanDisplayText(relative));
+			}
+		}
+	}
+}
 
 async function executable(
 	fs: HostFileSystem,

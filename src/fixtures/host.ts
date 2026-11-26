@@ -92,6 +92,24 @@ export function memoryHost(
 			return metadata(stats, sockets.has(filename));
 		},
 		mkdir: (directory, options) => volume.mkdir(directory, options),
+		async readDirectoryEntries(directory) {
+			const entries = await volume.readdir(directory, { withFileTypes: true });
+
+			return entries.map((entry) => {
+				if (typeof entry !== 'object' || !('name' in entry)) {
+					throw new TypeError('memfs did not return a directory entry.');
+				}
+
+				const name = entry.name.toString();
+
+				return {
+					name,
+					isDirectory: () => entry.isDirectory(),
+					isFile: () => entry.isFile() && !sockets.has(`${directory}/${name}`),
+					isSymbolicLink: () => entry.isSymbolicLink()
+				};
+			});
+		},
 		async readdir(directory) {
 			const names = await volume.readdir(directory);
 
