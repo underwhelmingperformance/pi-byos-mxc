@@ -91,7 +91,7 @@ it('uses real shell consumers and releases the old allocation on session replace
 											'search.grep',
 											...(process.platform === 'darwin' ? ['copy'] : [])
 										],
-										processKinds: ['shell'],
+										processKinds: ['argv', 'shell'],
 										shells: ['sh', 'bash'],
 										exitStatus:
 											process.platform === 'darwin' ? 'guaranteed' : 'optional',
@@ -100,8 +100,9 @@ it('uses real shell consumers and releases the old allocation on session replace
 								});
 								await expect(
 									client.get(context, { processKinds: ['argv'] })
-								).rejects.toMatchObject({
-									name: 'UnsupportedSandboxCapabilityError'
+								).resolves.toMatchObject({
+									generationId: sandbox.generationId,
+									backendId: sandbox.backendId
 								});
 								await expect(
 									client.get(context, { terminationScope: 'workload' })

@@ -4,6 +4,12 @@ import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import {
+	isSandboxError,
+	SandboxPathNotFoundError
+} from 'pi-bring-your-own-sandbox/provider';
+import { Type } from 'typebox';
+import { Check } from 'typebox/value';
 import { assert, expect, it } from 'vitest';
 
 import {
@@ -13,6 +19,57 @@ import {
 import { InjectedFailure } from './fixtures/errors.js';
 import { nodeCommand, withNativeSandbox } from './fixtures/native-sandbox.js';
 import { defaultPolicy } from './fixtures/profiles.js';
+
+it('uses target argv and environment without changing the launcher', async () => {
+	await withNativeSandbox(
+		{
+			environment: {
+				MXC_REMOVE: 'configured',
+				NODE_OPTIONS: '--require=/mxc-missing'
+			}
+		},
+		async (sandbox) => {
+			const value = Type.Union([Type.String(), Type.Null()]);
+			const schema = Type.Record(Type.String(), value);
+			const environment: unknown = JSON.parse(
+				'{"BASH_ENV":"/mxc-missing","MXC_REMOVE":null,"PATH":"/mxc-missing"}'
+			);
+
+			assert(Check(schema, environment));
+
+			await expect(
+				sandbox.exec({
+					kind: 'argv',
+					executable: 'mxc-missing',
+					args: [],
+					env: environment
+				})
+			).rejects.toSatisfy((error) =>
+				isSandboxError(error, SandboxPathNotFoundError)
+			);
+
+			const result = await sandbox.exec({
+				kind: 'argv',
+				executable: '/bin/sh',
+				args: [
+					'-c',
+					'printf "%s\n" "$PATH" "$NODE_OPTIONS" "${MXC_REMOVE-unset}"; exit 127'
+				],
+				env: environment
+			});
+
+			expect({ ...result, durationMs: 0 }).toStrictEqual({
+				exit: { kind: 'code', code: 127 },
+				stdout: new TextEncoder().encode(
+					'/mxc-missing\n--require=/mxc-missing\nunset\n'
+				),
+				stderr: new Uint8Array(),
+				omittedBytes: { stdout: 0, stderr: 0 },
+				durationMs: 0
+			});
+		}
+	);
+});
 
 it('starts the provider Node runtime with host user data denied', async () => {
 	await withNativeSandbox({}, async (sandbox) => {

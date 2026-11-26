@@ -27,6 +27,7 @@ import {
 	SandboxPermissionDeniedError,
 	SandboxSessionClosingError,
 	SandboxStartupError,
+	ShellTransportRunner,
 	StaleSandboxHandleError,
 	UnsupportedSandboxCapabilityError,
 	UnsupportedSandboxPolicyError
@@ -462,6 +463,7 @@ export class MxcBackend implements SandboxBackend {
 	readonly #canonicalHostWorkspace: string;
 	readonly #sessionId: string;
 	readonly #configuration: MxcConfig;
+	readonly #argv: ShellTransportRunner;
 	readonly #store: RecoveryStore;
 	readonly #grants: Pick<
 		StartMessage,
@@ -533,6 +535,21 @@ export class MxcBackend implements SandboxBackend {
 						: 'Shared host workspace, read-only inside the sandbox; host changes are visible. Private writable home/scratch lasts until generation disposal.'
 		});
 		this.recovery = store.recovery;
+		this.#argv = new ShellTransportRunner(
+			this.workspace.root,
+			targetEnvironment(
+				this.#defaultEnvironment(),
+				this.#configuration.environment
+			),
+			{
+				dialect: 'sh',
+				nodeExecutable: this.#host.environment.execPath,
+				providerId: 'mxc',
+				carrier: {
+					run: (request, context) => this.#run(request, context, {})
+				}
+			}
+		);
 
 		const hasReadOnlyRoot = profile.policy.hostUserData === 'read-only';
 		const isGeneratedSeatbelt =
@@ -598,11 +615,28 @@ export class MxcBackend implements SandboxBackend {
 		);
 	}
 
+	#defaultEnvironment(): Record<string, string> {
+		return {
+			PATH: [
+				...(this.#network === 'denied'
+					? [
+							'/Library/Developer/CommandLineTools/usr/bin',
+							'/Applications/Xcode.app/Contents/Developer/usr/bin'
+						]
+					: []),
+				SYSTEM_PATH,
+				...(this.#runtime.searchDirectories ?? [])
+			].join(':'),
+			HOME: this.#store.scratch,
+			TMPDIR: this.#store.scratch
+		};
+	}
+
 	async #execute(
 		request: ProcessRequest & { kind: 'shell' },
 		context: BackendProcessContext,
 		shell: string,
-		internal?: { helper: string; input?: Uint8Array }
+		internal?: { helper?: string; input?: Uint8Array }
 	): Promise<BackendProcessOutcome> {
 		const cwd = await workingDirectory(
 			this.#host.fs,
@@ -627,25 +661,14 @@ export class MxcBackend implements SandboxBackend {
 			readwritePaths: [...this.#grants.readwritePaths],
 			environment: targetEnvironment(
 				{
-					PATH: [
-						...(this.#network === 'denied'
-							? [
-									'/Library/Developer/CommandLineTools/usr/bin',
-									'/Applications/Xcode.app/Contents/Developer/usr/bin'
-								]
-							: []),
-						SYSTEM_PATH,
-						...(this.#runtime.searchDirectories ?? [])
-					].join(':'),
-					HOME: this.#store.scratch,
-					TMPDIR: this.#store.scratch,
+					...this.#defaultEnvironment(),
 					...(internal === undefined && this.#configuration.environment)
 				},
 				request.env
 			),
 			readonlyPaths: [
 				...this.#grants.readonlyPaths,
-				...(internal ? [internal.helper] : [])
+				...(internal?.helper ? [internal.helper] : [])
 			],
 			deniedPaths: [
 				...this.#grants.deniedPaths,
@@ -769,7 +792,7 @@ export class MxcBackend implements SandboxBackend {
 	async #run(
 		request: ProcessRequest,
 		context: BackendProcessContext,
-		internal?: { helper: string; input?: Uint8Array }
+		internal?: { helper?: string; input?: Uint8Array }
 	): Promise<BackendProcessOutcome> {
 		if (this.#isClosing) {
 			throw new SandboxSessionClosingError({
@@ -814,7 +837,9 @@ export class MxcBackend implements SandboxBackend {
 		request: ProcessRequest,
 		context: BackendProcessContext
 	): Promise<BackendProcessOutcome> {
-		return this.#run(request, context);
+		return request.kind === 'argv'
+			? this.#argv.run(request, context)
+			: this.#run(request, context);
 	}
 
 	dispose(context: SandboxOperationContext): Promise<void> {

@@ -33,7 +33,7 @@ function expectedProfiles(
 				hostSystemFiles: 'read-only'
 			},
 			capabilities,
-			processKinds: ['shell'],
+			processKinds: ['argv', 'shell'],
 			shells: ['sh', 'bash'],
 			exitStatus,
 			terminationScope: 'process-group',

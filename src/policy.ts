@@ -42,7 +42,7 @@ export function profilesFor(platform: NodeJS.Platform): {
 					hostSystemFiles: 'read-only'
 				},
 				capabilities,
-				processKinds: ['shell'],
+				processKinds: ['argv', 'shell'],
 				shells: ['sh', 'bash'],
 				exitStatus:
 					networkMode(backend, { network }) === 'denied'

@@ -259,6 +259,27 @@ defineSandboxProviderTests({
 			},
 			hostWorkspace: workspace,
 			policy: defaultPolicy,
+			processes: [
+				{
+					request: {
+						kind: 'argv',
+						executable: '/bin/sh',
+						args: [
+							'-c',
+							'printf "%s:%s:" "$MXC_PROBE" "$1"; cat data; exit 127',
+							'probe',
+							"literal '$(exit 9)'"
+						],
+						cwd: 'seeded',
+						env: { MXC_PROBE: 'target' }
+					},
+					exit: { kind: 'code', code: 127 },
+					stdout: new Uint8Array(
+						Buffer.concat([Buffer.from("target:literal '$(exit 9)':"), data])
+					),
+					stderr: new Uint8Array()
+				}
+			],
 			shells: {
 				sh: { ...probe, request: { kind: 'shell', dialect: 'sh', command } },
 				bash: { ...probe, request: { kind: 'shell', dialect: 'bash', command } }
