@@ -221,6 +221,34 @@ function records(memory: ReturnType<typeof memoryHost>['memory']) {
 		});
 }
 
+it.each(['denied', 'read-only'] as const)(
+	'publishes the host user data location for %s access',
+	async (hostUserData) => {
+		const { backend, context } = await openBackend(
+			{},
+			{
+				policy: { ...defaultPolicy, hostUserData },
+				files: { '/home/user': {} }
+			}
+		);
+
+		try {
+			expect(backend.workspace).toStrictEqual({
+				root: '/workspace',
+				pathFlavor: 'posix',
+				relationship: 'shared',
+				home: scratch,
+				...(hostUserData === 'read-only' && { hostUserDataRoot: '/home/user' }),
+				defaultShell: 'sh',
+				description:
+					'Shared host workspace; changes persist. Private home/scratch lasts until generation disposal.'
+			});
+		} finally {
+			await backend.dispose(context);
+		}
+	}
+);
+
 it.each([
 	{
 		completion: 'confirmed',

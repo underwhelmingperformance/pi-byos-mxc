@@ -324,7 +324,12 @@ export class MxcBackend implements SandboxBackend {
 			const backend = new MxcBackend(
 				request,
 				profile,
-				{ ...runtime, workspace, protection },
+				{
+					...runtime,
+					workspace,
+					protection,
+					...(hasHostReads && { hostUserDataRoot: hostHome })
+				},
 				store,
 				dependencies,
 				relationship,
@@ -453,6 +458,7 @@ export class MxcBackend implements SandboxBackend {
 		profile: Profile,
 		runtime: MxcRuntime & {
 			readonly protection: Protection;
+			readonly hostUserDataRoot?: string;
 		},
 		store: RecoveryStore,
 		dependencies: BackendDependencies,
@@ -489,6 +495,9 @@ export class MxcBackend implements SandboxBackend {
 			pathFlavor: 'posix',
 			relationship,
 			home: store.scratch,
+			...(runtime.hostUserDataRoot !== undefined && {
+				hostUserDataRoot: runtime.hostUserDataRoot
+			}),
 			defaultShell: 'sh',
 			description:
 				relationship === 'copied'
