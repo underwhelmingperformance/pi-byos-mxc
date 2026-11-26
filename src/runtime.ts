@@ -6,6 +6,8 @@ import type { ShellDialect } from 'pi-bring-your-own-sandbox/provider';
 
 import type { MxcConfig } from './config.js';
 import {
+	NodeLibraryResolutionError,
+	OverlappingPathsError,
 	ShellNotFileError,
 	ShellStartupError,
 	UnsupportedRuntimeError,
@@ -14,6 +16,7 @@ import {
 import type { Host, HostFileSystem } from './host.js';
 import { systemHost } from './host.js';
 import { assertDisjointPaths } from './paths.js';
+import { linkedLibraryGrants } from './platform/linked-libraries.js';
 import { packageRoot, trustedPackages } from './platform/packages.js';
 import { darwinSearchTools } from './platform/search-tools.js';
 import { systemReadonlyPaths } from './platform/system-paths.js';
@@ -92,6 +95,26 @@ export async function prepareRuntime(
 			? await options.searchTools?.(canonicalWorkspace)
 			: undefined;
 	const node = await fs.realpath(environment.execPath);
+
+	assertDisjointPaths(canonicalWorkspace, [node]);
+
+	let nodeLibraries: string[];
+
+	try {
+		nodeLibraries = await linkedLibraryGrants(node, {
+			platform: environment.platform,
+			workspace: canonicalWorkspace,
+			inspect: options.host.inspectLinkedLibraries,
+			realpath: (filename) => fs.realpath(filename)
+		});
+	} catch (error) {
+		if (error instanceof OverlappingPathsError) {
+			throw error;
+		}
+
+		throw new NodeLibraryResolutionError({ cause: error });
+	}
+
 	const protectedPaths = [
 		...(await trustedPackages(
 			options.host,
@@ -124,6 +147,7 @@ export async function prepareRuntime(
 			...readonlyPaths,
 			...shells.values(),
 			node,
+			...nodeLibraries,
 			path.resolve(path.dirname(entry), '../tools'),
 			...(search?.files ?? [])
 		],

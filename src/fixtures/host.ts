@@ -69,6 +69,7 @@ interface MemoryHostOptions {
 	sockets.
 	*/
 	readonly sockets?: readonly string[];
+	readonly linkedLibraries?: Readonly<Record<string, string[]>>;
 }
 
 /**
@@ -123,6 +124,8 @@ export function memoryHost(
 		},
 		packageDirectory: (specifier, base) =>
 			Promise.resolve(options.packages?.[base]?.[specifier]),
+		inspectLinkedLibraries: (filename) =>
+			Promise.resolve(options.linkedLibraries?.[filename] ?? []),
 		git(directory, gitArguments) {
 			const output = options.git?.[directory]?.[gitArguments.join(' ')];
 

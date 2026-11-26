@@ -237,11 +237,14 @@ MXC also accepts these keys:
   host environment. Per-command overrides and deletions apply only in the
   target.
 
-MXC grants the running Node executable and its packaged tool runtime read-only.
-On macOS MXC looks for `fd` and `rg` in Pi's personal `bin` and in system
-installations on the host search path. MXC grants the selected executables and
-their resolved libraries. `environment.PATH` can select tools that are already
-readable under the chosen profile.
+Every profile grants read-only access to the running Node executable, its linked
+libraries and the packaged tool runtime. MXC uses `otool` on macOS and `ldd` on
+Linux to find the libraries. On macOS MXC also looks for `fd` and `rg` in Pi's
+personal `bin` and in system installations on the host search path. MXC grants
+the selected executables and resolves their libraries the same way. A library
+grant covers its Nix store output or Homebrew Cellar package when applicable,
+and the individual file in other installations. `environment.PATH` can select
+tools that are already readable under the chosen profile.
 
 ## Protected workspace resources
 

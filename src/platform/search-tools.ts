@@ -1,14 +1,16 @@
-import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
 
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 
 import { compareText, isPathWithin } from '../paths.js';
 
-const execute = promisify(execFile);
+import {
+	inspectLinkedLibraries,
+	linkedLibraryGrants
+} from './linked-libraries.js';
+
 const installations = ['/opt', '/usr/local', '/nix/store', '/usr/bin'];
 
 export interface SearchToolchain {
@@ -16,78 +18,9 @@ export interface SearchToolchain {
 	readonly files: string[];
 }
 
-async function libraries(
-	binary: string,
-	workspace: string,
-	inspector: string
-): Promise<string[]> {
-	const files = new Set([binary]);
-
-	const pending = [binary];
-
-	for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
-		const { stdout } = await execute(inspector, ['-L', file], {
-			cwd: '/',
-			env: { PATH: '/usr/bin:/bin' },
-			timeout: 3000
-		});
-
-		for (const line of stdout.split('\n').slice(1)) {
-			const library = line.trim().split(' (', 1)[0];
-
-			if (
-				!library ||
-				library.startsWith('/usr/lib/') ||
-				library.startsWith('/System/Library/')
-			) {
-				continue;
-			}
-
-			const candidate = library.startsWith('@loader_path/')
-				? path.join(path.dirname(file), library.slice('@loader_path/'.length))
-				: library;
-
-			if (!path.isAbsolute(candidate)) {
-				throw new Error(
-					'The tool uses a library search path that requires explicit grants.'
-				);
-			}
-
-			const resolved = await realpath(candidate);
-
-			if (
-				isPathWithin(workspace, resolved) ||
-				installations.every((root) => !isPathWithin(root, resolved))
-			) {
-				throw new Error(
-					'The tool has a library outside its system installation.'
-				);
-			}
-
-			if (files.has(resolved)) {
-				continue;
-			}
-
-			files.add(resolved);
-			pending.push(resolved);
-		}
-	}
-
-	return [...files];
-}
-
-async function libraryInspector(): Promise<string> {
-	try {
-		return await realpath('/Library/Developer/CommandLineTools/usr/bin/otool');
-	} catch {
-		return '/usr/bin/otool';
-	}
-}
-
 export async function darwinSearchTools(
 	workspace: string
 ): Promise<SearchToolchain> {
-	const inspector = await libraryInspector();
 	const piBin = path.join(getAgentDir(), 'bin');
 	const directories = [
 		piBin,
@@ -123,7 +56,24 @@ export async function darwinSearchTools(
 
 				await access(file, constants.X_OK);
 
-				const grants = await libraries(file, workspace, inspector);
+				const grants = await linkedLibraryGrants(file, {
+					platform: 'darwin',
+					workspace,
+					inspect: inspectLinkedLibraries,
+					async realpath(candidate) {
+						const resolved = await realpath(candidate);
+
+						if (installations.every((root) => !isPathWithin(root, resolved))) {
+							throw new Error(
+								'The tool has a library outside its system installation.'
+							);
+						}
+
+						return resolved;
+					}
+				});
+
+				files.add(file);
 
 				for (const grant of grants) {
 					files.add(grant);

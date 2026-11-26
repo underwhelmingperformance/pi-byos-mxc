@@ -4,6 +4,16 @@ backend reports their messages to the user when opening fails.
 */
 export abstract class MxcConfigError extends Error {}
 
+export class NodeLibraryResolutionError extends MxcConfigError {
+	constructor(options: ErrorOptions) {
+		super(
+			'MXC could not resolve the running Node executable’s shared libraries. Check the Node installation and that otool (macOS) or ldd (Linux) is available.',
+			options
+		);
+		this.name = 'NodeLibraryResolutionError';
+	}
+}
+
 export class InvalidSettingsError extends MxcConfigError {
 	override readonly name = 'InvalidSettingsError';
 

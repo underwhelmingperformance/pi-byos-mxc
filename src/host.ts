@@ -7,6 +7,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { GitCommandError, GitUnavailableError } from './errors.js';
+import type { InspectLinkedLibraries } from './platform/linked-libraries.js';
+import { inspectLinkedLibraries } from './platform/linked-libraries.js';
 
 interface FileMetadata {
 	readonly dev: number;
@@ -69,6 +71,7 @@ export interface Host {
 	readonly fs: HostFileSystem;
 	readonly environment: HostEnvironment;
 	readonly randomId: () => string;
+	readonly inspectLinkedLibraries: InspectLinkedLibraries;
 
 	/**
 	Returns the canonical directory of the package that Node uses for
@@ -182,6 +185,7 @@ export const systemHost: Host = Object.freeze({
 		homeDirectory: homedir()
 	}),
 	randomId: randomUUID,
+	inspectLinkedLibraries,
 	packageDirectory,
 	git
 });

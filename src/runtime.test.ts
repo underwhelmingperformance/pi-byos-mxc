@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { expect, it } from 'vitest';
 
 import { validateConfig } from './config.js';
@@ -13,7 +15,10 @@ import { prepareRuntime } from './runtime.js';
 
 const supervisor = '/runtime/pkg/dist/supervisor/entry.js';
 
-function layout(environment: Partial<HostEnvironment> = {}) {
+function layout(
+	environment: Partial<HostEnvironment> = {},
+	linkedLibraries?: Readonly<Record<string, string[]>>
+) {
 	const fixture = memoryHost(
 		{
 			'/runtime/pkg/package.json': JSON.stringify({
@@ -36,6 +41,7 @@ function layout(environment: Partial<HostEnvironment> = {}) {
 		},
 		{
 			environment,
+			...(linkedLibraries && { linkedLibraries }),
 			packages: {
 				[supervisor]: { [supervisor]: '/runtime/pkg' },
 				'/runtime/pkg/package.json': {
@@ -94,6 +100,54 @@ it('prepares canonical grants for a separate workspace', async () => {
 		],
 		backend: 'seatbelt'
 	});
+});
+
+it('grants the Node runtime libraries even with a configured target PATH', async () => {
+	const packagePath = '/nix/store/arspcb0pa15f9f2b079k1kpqik297fxz-zlib-1.3.2';
+	const library = `${packagePath}/lib/libz.dylib`;
+	const dependency = '/runtime/lib/libdependency.dylib';
+	const { memory, prepare } = layout(
+		{},
+		{
+			'/runtime/node/bin/node': [library, '/usr/lib/libSystem.B.dylib'],
+			[library]: [library, dependency],
+			[dependency]: [library]
+		}
+	);
+
+	for (const filename of [library, dependency]) {
+		memory.mkdirSync(path.dirname(filename), { recursive: true });
+		memory.writeFileSync(filename, '');
+	}
+
+	const runtime = await prepare('/workspace', {
+		environment: { PATH: '/bin' }
+	});
+
+	expect(runtime.readonlyPaths).toStrictEqual([
+		'/bin/dash',
+		'/bin/bash',
+		'/runtime/node/bin/node',
+		packagePath,
+		dependency,
+		'/runtime/pkg/dist/tools'
+	]);
+});
+
+it('rejects a Node runtime library inside the workspace', async () => {
+	const library = '/workspace/libnode.dylib';
+	const { memory, prepare } = layout(
+		{},
+		{
+			'/runtime/node/bin/node': [library]
+		}
+	);
+
+	memory.writeFileSync(library, '');
+
+	await expect(prepare('/workspace')).rejects.toStrictEqual(
+		new OverlappingPathsError('/workspace', library)
+	);
 });
 
 it.each([

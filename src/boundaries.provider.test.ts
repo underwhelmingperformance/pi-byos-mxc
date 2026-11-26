@@ -14,6 +14,28 @@ import { InjectedFailure } from './fixtures/errors.js';
 import { nodeCommand, withNativeSandbox } from './fixtures/native-sandbox.js';
 import { defaultPolicy } from './fixtures/profiles.js';
 
+it('starts the provider Node runtime with host user data denied', async () => {
+	await withNativeSandbox({}, async (sandbox) => {
+		const result = await sandbox.exec({
+			kind: 'shell',
+			dialect: 'sh',
+			command: nodeCommand('process.stdout.write(process.versions.node)')
+		});
+
+		expect({
+			...result,
+			stderr: new TextDecoder().decode(result.stderr),
+			durationMs: 0
+		}).toStrictEqual({
+			exit: { kind: 'code', code: 0 },
+			stdout: new TextEncoder().encode(process.versions.node),
+			stderr: '',
+			omittedBytes: { stdout: 0, stderr: 0 },
+			durationMs: 0
+		});
+	});
+});
+
 it('drains binary output beyond the shared capture limit', async () => {
 	await withNativeSandbox({}, async (sandbox) => {
 		let streamed = 0;
