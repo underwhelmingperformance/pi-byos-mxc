@@ -184,7 +184,6 @@ export async function prepareRuntime(
 			...shells.values(),
 			node,
 			...nodeLibraries,
-			path.resolve(path.dirname(entry), '../tools'),
 			...(search?.files ?? [])
 		],
 		shells,

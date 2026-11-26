@@ -88,12 +88,7 @@ it('prepares canonical grants for a separate workspace', async () => {
 			'/runtime/store/transitive/node_modules/transitive',
 			'/runtime/node/bin/node'
 		],
-		readonlyPaths: [
-			'/bin/dash',
-			'/bin/bash',
-			'/runtime/node/bin/node',
-			'/runtime/pkg/dist/tools'
-		],
+		readonlyPaths: ['/bin/dash', '/bin/bash', '/runtime/node/bin/node'],
 		shells: [
 			['sh', '/bin/dash'],
 			['bash', '/bin/bash']
@@ -129,8 +124,7 @@ it('grants the Node runtime libraries even with a configured target PATH', async
 		'/bin/bash',
 		'/runtime/node/bin/node',
 		packagePath,
-		dependency,
-		'/runtime/pkg/dist/tools'
+		dependency
 	]);
 });
 

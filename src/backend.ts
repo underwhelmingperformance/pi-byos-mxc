@@ -58,13 +58,12 @@ import { defaultWorkspaceProtection, planProtection } from './protection.js';
 import { RecoveryStore } from './recovery.js';
 import type { MxcRuntime } from './runtime.js';
 import { prepareRuntime, verifyWorkspaceEntries } from './runtime.js';
-import { sandboxSearch } from './search.js';
 import { SYSTEM_PATH, targetEnvironment } from './shell.js';
 import type { JobOptions } from './supervisor/client.js';
 import { SupervisorJob } from './supervisor/client.js';
 import type { StartMessage } from './supervisor/protocol.js';
 import { MAX_START_BYTES } from './supervisor/protocol.js';
-import { sandboxFiles } from './target-files.js';
+import { sandboxTargetOperations } from './target-operations.js';
 
 const SEATBELT_ROOT_WRITE_EXCEPTIONS = [
 	'/dev/null',
@@ -74,6 +73,11 @@ const SEATBELT_ROOT_WRITE_EXCEPTIONS = [
 ];
 
 type JobRunner = Pick<SupervisorJob, 'run' | 'limitCleanup'>;
+
+interface ShellLaunchOptions {
+	readonly bootstrap?: true;
+	readonly input?: Uint8Array;
+}
 
 interface BackendDependencies {
 	readonly host: Host;
@@ -518,7 +522,8 @@ export class MxcBackend implements SandboxBackend {
 				nodeExecutable: this.#host.environment.execPath,
 				providerId: 'mxc',
 				carrier: {
-					run: (request, context) => this.#run(request, context, {})
+					run: (request, context) =>
+						this.#run(request, context, { bootstrap: true })
 				}
 			}
 		);
@@ -554,32 +559,34 @@ export class MxcBackend implements SandboxBackend {
 			})
 		};
 
-		this.files = sandboxFiles(
+		const operations = sandboxTargetOperations(
 			runtime.workspace,
 			this.#host.environment.execPath,
-			(command, context, input) =>
-				this.#run({ kind: 'shell', dialect: 'sh', command }, context, {
-					...(input !== undefined && { input })
-				}),
+			{
+				file: (command, context, input) =>
+					this.#run({ kind: 'shell', dialect: 'sh', command }, context, {
+						bootstrap: true,
+						...(input !== undefined && { input })
+					}),
+				search: (command, context, input) =>
+					this.#run(
+						{
+							kind: 'shell',
+							dialect: 'sh',
+							command,
+							env: { NODE_OPTIONS: '', NODE_PATH: '' }
+						},
+						context,
+						{
+							input
+						}
+					)
+			},
 			{ providerId: 'mxc', backendId: this.id, recovery: this.recovery }
 		);
 
-		const worker = path.resolve(
-			path.dirname(runtime.entry),
-			'../tools/search.mjs'
-		);
-
-		this.search = sandboxSearch({
-			node: this.#host.environment.execPath,
-			worker,
-			workspace: runtime.workspace,
-			stat: this.files.read.stat,
-			exec: (request, context) => this.exec(request, context),
-			run: (command, context) =>
-				this.#run({ kind: 'shell', dialect: 'sh', command }, context, {
-					helper: worker
-				})
-		});
+		this.files = operations.files;
+		this.search = operations.search;
 		this.policyDescription = describePolicy(
 			runtime,
 			profile.policy,
@@ -610,7 +617,7 @@ export class MxcBackend implements SandboxBackend {
 		request: ProcessRequest & { kind: 'shell' },
 		context: BackendProcessContext,
 		shell: string,
-		internal?: { helper?: string; input?: Uint8Array }
+		launch?: ShellLaunchOptions
 	): Promise<BackendProcessOutcome> {
 		const cwd = await workingDirectory(
 			this.#host.fs,
@@ -636,14 +643,11 @@ export class MxcBackend implements SandboxBackend {
 			environment: targetEnvironment(
 				{
 					...this.#defaultEnvironment(),
-					...(internal === undefined && this.#configuration.environment)
+					...(!launch?.bootstrap && this.#configuration.environment)
 				},
 				request.env
 			),
-			readonlyPaths: [
-				...this.#grants.readonlyPaths,
-				...(internal?.helper ? [internal.helper] : [])
-			],
+			readonlyPaths: [...this.#grants.readonlyPaths],
 			deniedPaths: [
 				...this.#grants.deniedPaths,
 				...(await resolverSockets(
@@ -675,7 +679,7 @@ export class MxcBackend implements SandboxBackend {
 		const job = this.#createJob({
 			entry: this.#runtime.entry,
 			request: invocation,
-			...(internal?.input !== undefined && { input: internal.input }),
+			...(launch?.input !== undefined && { input: launch.input }),
 			context: {
 				...context,
 				signal,
@@ -766,7 +770,7 @@ export class MxcBackend implements SandboxBackend {
 	async #run(
 		request: ProcessRequest,
 		context: BackendProcessContext,
-		internal?: { helper?: string; input?: Uint8Array }
+		launch?: ShellLaunchOptions
 	): Promise<BackendProcessOutcome> {
 		if (this.#isClosing) {
 			throw new SandboxSessionClosingError({
@@ -794,8 +798,8 @@ export class MxcBackend implements SandboxBackend {
 		const running = this.#execute(
 			request,
 			context,
-			internal ? '/bin/sh' : shell,
-			internal
+			launch?.bootstrap ? '/bin/sh' : shell,
+			launch
 		);
 
 		this.#jobs.add(running);

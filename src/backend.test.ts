@@ -15,7 +15,7 @@ import {
 	SandboxTransportError,
 	UnsupportedSandboxPolicyError
 } from 'pi-bring-your-own-sandbox/provider';
-import { expect, it } from 'vitest';
+import { assert, expect, it } from 'vitest';
 
 import { MxcBackend } from './backend.js';
 import { validateConfig } from './config.js';
@@ -23,8 +23,9 @@ import { OverlappingPathsError, ShellStartupError } from './errors.js';
 import { cleanupControl } from './fixtures/cleanup.js';
 import { memoryHost } from './fixtures/host.js';
 import { defaultPolicy, fixtureProfile } from './fixtures/profiles.js';
+import { transportCommand } from './shell.js';
 import type { JobOptions } from './supervisor/client.js';
-import { parentMessage } from './supervisor/protocol.js';
+import { MAX_START_BYTES, parentMessage } from './supervisor/protocol.js';
 
 const root = '/tmp/pi-byos-mxc-00000000-0000-4000-8000-000000000001';
 const scratch = `${root}/scratch`;
@@ -99,6 +100,8 @@ interface FixtureHost {
 	readonly backend?: 'seatbelt' | 'bubblewrap';
 	readonly sockets?: readonly string[];
 	readonly protectPaths?: readonly string[];
+	readonly sh?: string;
+	readonly environment?: Readonly<Record<string, string>>;
 	readonly abortBash?: boolean;
 	readonly reportRecovery?: SandboxOpenContext['reportRecovery'];
 	readonly reportDiagnostic?: SandboxOpenContext['reportDiagnostic'];
@@ -112,6 +115,8 @@ async function openBackend(
 		backend: native = 'seatbelt',
 		sockets = [],
 		protectPaths = [],
+		sh = '/bin/sh',
+		environment = {},
 		abortBash = false,
 		reportRecovery,
 		reportDiagnostic
@@ -135,7 +140,10 @@ async function openBackend(
 			sessionId: 'test',
 			hostWorkspace: '/workspace',
 			profile: fixtureProfile(policy, host.environment.platform),
-			configuration: validateConfig({ protectPaths: [...protectPaths] })
+			configuration: validateConfig({
+				protectPaths: [...protectPaths],
+				environment
+			})
 		},
 		context,
 		{
@@ -145,7 +153,7 @@ async function openBackend(
 					workspace: '/workspace',
 					entry: '/unused-supervisor',
 					shells: new Map([
-						['sh', '/bin/sh'],
+						['sh', sh],
 						['bash', '/bin/bash']
 					]),
 					readonlyPaths: ['/bin/sh'],
@@ -243,6 +251,77 @@ it.each(['denied', 'read-only'] as const)(
 				description:
 					'Shared host workspace; changes persist. Private home/scratch lasts until generation disposal.'
 			});
+		} finally {
+			await backend.dispose(context);
+		}
+	}
+);
+
+it.each([
+	{ native: 'seatbelt', network: false },
+	{ native: 'seatbelt', network: true },
+	{ native: 'bubblewrap', network: false }
+] as const)(
+	'launches SDK search with ordinary command authority on $native with network $network',
+	async ({ native, network }) => {
+		const requests: JobOptions[] = [];
+		const clearNodeEnvironment = { NODE_OPTIONS: '', NODE_PATH: '' };
+		const { backend, context } = await openBackend(
+			{
+				run(options) {
+					requests.push(options);
+					options.context.onOutput({
+						stream: 'stdout',
+						data: Buffer.from('{"paths":["notes.txt"],"truncated":false}')
+					});
+
+					return Promise.resolve(exited);
+				}
+			},
+			{
+				backend: native,
+				policy: { ...defaultPolicy, network },
+				sh: '/custom/sh',
+				environment: { MXC_TEST: 'configured', NODE_OPTIONS: '--invalid' }
+			}
+		);
+
+		try {
+			await backend.exec(
+				{
+					kind: 'shell',
+					dialect: 'sh',
+					command: 'true',
+					env: clearNodeEnvironment
+				},
+				context
+			);
+
+			const result = await backend.search?.find?.(
+				{ pattern: '*.txt' },
+				context
+			);
+			const [ordinary, search] = requests;
+
+			expect(result).toStrictEqual({ paths: ['notes.txt'], truncated: false });
+			assert.isDefined(ordinary);
+			assert.isDefined(search);
+			expect({ ...search.request, id: ordinary.request.id }).toStrictEqual({
+				...ordinary.request,
+				command:
+					"exec '/runtime/node/bin/node' '--input-type=module' '-' 'find' 'pattern=*.txt' '16777216' '/workspace'"
+			});
+			expect(search.input?.byteLength).toBeGreaterThan(0);
+			expect(Buffer.byteLength(JSON.stringify(search.request))).toBeLessThan(
+				MAX_START_BYTES
+			);
+
+			const command = transportCommand({
+				...search.request,
+				gate: search.request.id
+			});
+
+			expect(Buffer.byteLength(command) + 1).toBeLessThanOrEqual(128 * 1024);
 		} finally {
 			await backend.dispose(context);
 		}
