@@ -249,9 +249,16 @@ tools that are already readable under the chosen profile.
 
 ## Protected workspace resources
 
-MXC protects Git metadata, `.pi`, `.envrc`, `.direnv`, `.vscode`, `.idea` and
-`.devcontainer` whenever a backend can write to its workspace. Add project
+When a backend can write to its workspace, MXC protects the [SDK's default
+paths][protected-defaults] and Git metadata that it discovers on the host. The
+defaults cover shell startup files and configuration for Pi, editors, direnv,
+AWS and MCP. On macOS the `.config/fish` default protects the whole `.config`
+directory, including entries that do not exist yet. On Linux MXC pins an
+existing `.config` directory and protects `.config/fish` separately. Add project
 entries through `protectPaths`:
+
+[protected-defaults]:
+  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/caf09630558859d62c34b3242db865756b80bec3/packages/sdk/src/protected-workspace-paths.ts
 
 ```json
 {
@@ -306,6 +313,11 @@ read-only inside MXC. Host changes are visible in either case. Copies never
 write to the live checkout. Each backend has a writable private scratch
 directory. MXC removes it on successful disposal. Recovery records are stored
 separately.
+
+Before opening a live checkout, MXC checks directory entries without following
+symlinks. If the checkout contains a socket, FIFO or device file, opening fails
+with `UnsupportedSandboxPolicyError` before MXC allocates resources. Remove the
+reported entry and retry. A host process can still add entries after opening.
 
 Every profile allows host system reads and prevents general host system writes.
 A `hostUserData: "denied"` profile excludes other host user files. A macOS
@@ -374,7 +386,7 @@ sandboxed command can connect to a host service's UNIX socket and ask it to make
 network connections on the command's behalf. With MXC's generated profiles,
 reachable sockets include:
 
-- sockets in the writable workspace, which any host process can create;
+- sockets that a host process adds to the writable workspace after opening;
 - on Linux, sockets in read-only grants, because a read-only mount does not
   prevent connecting to a socket;
 - on macOS with `open-egress`, every socket on the host, including the
@@ -398,13 +410,16 @@ the [macOS DNS notes][macos-dns].
 [linux-dns]: docs/linux-dns.md
 [macos-dns]: docs/macos-dns.md
 
-Shell requests use native `sh` or a verified Bash executable. There is no argv
-emulation, PowerShell, PTY or interactive stdin. After the release barrier,
-target stdin receives EOF. The working directory must exist; a missing directory
-fails before the command starts. Output remains bytes. A verified native result
-under the offline macOS policy includes the exit code or signal from the kernel.
-The supervisor registers a kqueue observer before releasing the target. Under
-the other profiles, exit status is optional. Pi displays unavailable status as a
+Shell requests use native `sh` or a verified Bash executable. The SDK's argv
+launcher passes arguments directly to the target executable and keeps target
+environment overrides out of the launcher. Requests support a target working
+directory and stream output as bytes. PowerShell, PTY and interactive stdin are
+unavailable. On macOS, commands can also reopen writable descriptors through
+`/dev/stdout`, `/dev/stderr` and `/dev/fd/N`.
+
+The offline macOS supervisor registers a kqueue observer before releasing the
+target. Shell results include the exit code or signal from the kernel. Other
+profiles declare optional exit status. Pi displays unavailable status as a
 failed command.
 
 Consumers may require `terminationScope: 'workload'`. Acquisition then fails
@@ -417,7 +432,7 @@ automatically readable sandbox paths.
 ## Packed installation and verification
 
 Build and pack on the intended platform. The archive includes the native
-helpers, the Pi tool worker and the pinned BYOS SDK.
+helpers, the provider's search worker and the compiled BYOS SDK.
 
 ```sh
 pnpm build
@@ -436,10 +451,11 @@ MXC_EGRESS_TEST_URL=https://example.com \
 `pnpm check` runs the unit tests, which replace the host filesystem, Git, clock
 and supervisor process with in-memory implementations, and the integration
 tests, which use the real host. `pnpm test:provider` runs real MXC sandboxes.
-The integration and provider tests need Git. The macOS search tool test needs fd
-and ripgrep on the host search path. The HTTPS endpoint must return 200. Replace
-the example peer address with a reachable controlled IPv4 fixture. The source
-checkout includes `script/network-peer.ts`; [fixture
+The integration and provider tests need Git. The macOS search tests exercise
+ripgrep from the host search path. See the [provider conformance
+notes][conformance] for the profiles and probes. The HTTPS endpoint must
+return 200. Replace the example peer address with a reachable controlled IPv4
+fixture. The source checkout includes `script/network-peer.ts`; [fixture
 instructions][network-fixtures] describe its TCP, UDP, DNS and observation
 endpoints. The gate checks host reachability before and after sandbox probes,
 plus independent peer request counters. Invoked gates fail when runtimes or
@@ -448,3 +464,4 @@ reaches the peer and the reply is refused, so a change in that behaviour fails
 the gate. See the evidence document for actual results and gaps.
 
 [network-fixtures]: docs/network-fixtures.md
+[conformance]: docs/provider-conformance.md

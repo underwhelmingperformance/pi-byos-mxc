@@ -53,13 +53,11 @@ service and forwards DNS to the host. Those facilities are outside the BYOS
 investigation contract. The project provides evidence about native startup; it
 does not validate this provider's isolation policy.
 
-In the installed Pi 1.5.0, the BYOS adapter routes shell execution. The file and
-search tools require integration of their own. In particular, Pi's `grep`
-launches ripgrep on the host even with custom `GrepOperations`, and `read`
-checks path existence on the host before calling its injected read operations.
-The adapter would need to run both operations inside the negotiated backend.
-Direct Node calls from extensions and independently running MCP servers require
-their own integration.
+At BYOS revision `caf0963`, the SDK adapter routes Pi 1.5.0 shell, file and
+search tools through the negotiated sandbox. `read` checks paths through the
+sandbox facade. `grep` runs the target's `rg` when available. Direct Node calls
+from extensions and independently running MCP servers require their own
+integration.
 
 [darwin-jail]: https://github.com/chkkv/macos-jail
 
