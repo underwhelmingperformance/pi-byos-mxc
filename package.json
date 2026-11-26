@@ -38,7 +38,7 @@
 		"check:format": "prettier --check .",
 		"check:knip": "knip --no-progress",
 		"check:lint": "eslint . --max-warnings 0",
-		"check:markdown": "markdownlint-cli2 '**/*.md' '#node_modules' '#dist'",
+		"check:markdown": "markdownlint-cli2 '**/*.md' '#node_modules' '#dist' '#.git'",
 		"check:test": "pnpm test",
 		"check:types": "tsc --noEmit",
 		"test": "vitest run",
