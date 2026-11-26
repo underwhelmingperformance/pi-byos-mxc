@@ -8,6 +8,7 @@ import {
 	rename,
 	rm,
 	stat,
+	symlink,
 	writeFile
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,8 +17,17 @@ import { promisify } from 'node:util';
 
 import type {
 	ProcessRequest,
+	SandboxCopySource,
+	SandboxOpenContext,
+	SandboxOpenRequest,
 	SandboxProvider
 } from 'pi-bring-your-own-sandbox/provider';
+import {
+	isSandboxError,
+	SandboxPathNotFoundError,
+	SandboxPermissionDeniedError
+} from 'pi-bring-your-own-sandbox/provider';
+import type { SandboxProviderTestOptions } from 'pi-bring-your-own-sandbox/testing';
 import { defineSandboxProviderTests } from 'pi-bring-your-own-sandbox/testing';
 import { assert, expect } from 'vitest';
 
@@ -37,40 +47,76 @@ import { SupervisorJob } from './supervisor/client.js';
 const provider = createProvider();
 const allocations = new Map<string, Set<string>>();
 const jobs = new Map<string, Map<string, JobAllocation>>();
+const targets = new Map<string, { root: string; home: string }>();
 const execute = promisify(execFile);
-const testedProvider: SandboxProvider<MxcConfig> = {
-	...provider,
-	open(request, context) {
-		return MxcBackend.open(
-			request,
-			{
-				...context,
-				reportRecovery(recovery) {
-					context.reportRecovery(recovery);
 
-					if (recovery.kind === 'allocation') {
-						allocations
-							.get(request.hostWorkspace)
-							?.add(path.join(tmpdir(), `pi-byos-mxc-${recovery.id}`));
-					}
-				}
-			},
-			{
-				prepareRuntime,
-				createJob(options) {
-					return new SupervisorJob({
-						...options,
-						record(allocation) {
-							jobs.get(request.hostWorkspace)?.set(allocation.id, allocation);
+async function observedOpen(
+	request: SandboxOpenRequest<MxcConfig>,
+	context: SandboxOpenContext,
+	source?: SandboxCopySource
+) {
+	const backend = await MxcBackend.open(
+		request,
+		{
+			...context,
+			reportRecovery(recovery) {
+				context.reportRecovery(recovery);
 
-							return options.record(allocation);
-						}
-					});
+				if (recovery.kind === 'allocation') {
+					allocations
+						.get(request.hostWorkspace)
+						?.add(path.join(tmpdir(), `pi-byos-mxc-${recovery.id}`));
 				}
 			}
-		);
+		},
+		{
+			prepareRuntime,
+			createJob(options) {
+				return new SupervisorJob({
+					...options,
+					record(allocation) {
+						jobs.get(request.hostWorkspace)?.set(allocation.id, allocation);
+
+						return options.record(allocation);
+					}
+				});
+			}
+		},
+		source
+	);
+
+	if (!targets.has(request.hostWorkspace)) {
+		const { root, home } = backend.workspace;
+
+		assert.isDefined(home);
+		targets.set(request.hostWorkspace, { root, home });
 	}
+
+	return backend;
+}
+
+const testedProvider: SandboxProvider<MxcConfig> = {
+	...provider,
+	open: observedOpen,
+	...(provider.copy !== undefined && {
+		copy: (request, context) => observedOpen(request, context, request.source)
+	})
 };
+
+function targetFor(workspace: string) {
+	const target = targets.get(workspace);
+
+	assert.isDefined(target);
+
+	return target;
+}
+
+function isDenied(error: unknown): boolean {
+	return (
+		isSandboxError(error, SandboxPermissionDeniedError) ||
+		isSandboxError(error, SandboxPathNotFoundError)
+	);
+}
 
 async function verifyOwnedProcesses(workspace: string): Promise<void> {
 	const seen = jobs.get(workspace);
@@ -105,7 +151,7 @@ async function verifyOwnedProcesses(workspace: string): Promise<void> {
 async function verifyStopped(workspace: string): Promise<void> {
 	await verifyOwnedProcesses(workspace);
 
-	await verifyDescendantStopped(workspace);
+	await verifyDescendantStopped(targetFor(workspace).home);
 }
 
 function shell(command: string): ProcessRequest {
@@ -151,13 +197,13 @@ function visibilityProbe(workspace: string) {
 	};
 }
 
-defineSandboxProviderTests({
-	workspaceVisibility: 'shared',
-	label: `MXC ${process.platform}/${process.arch} shared workspace`,
+const suite: SandboxProviderTestOptions<MxcConfig> = {
+	label: `MXC ${process.platform}/${process.arch} declared profiles`,
 	provider: testedProvider,
 	timeoutMs: 20_000,
 	cleanup: { cancellationGraceMs: 10_000, disposalTimeoutMs: 15_000 },
-	async createFixture() {
+	async createFixture(selection) {
+		const policy = selection?.profile.policy ?? defaultPolicy;
 		const temporary = await mkdtemp(
 			path.join(tmpdir(), 'pi-byos-mxc-contract-')
 		);
@@ -182,14 +228,15 @@ defineSandboxProviderTests({
 		await mkdir(seeded);
 		await writeFile(path.join(seeded, 'data'), data);
 
-		const searchRoot = path.join(workspace, 'search');
+		const searchRoot = 'search';
+		const searchDirectory = path.join(workspace, searchRoot);
 
-		await mkdir(searchRoot);
+		await mkdir(searchDirectory);
 		await writeFile(
-			path.join(searchRoot, 'notes.txt'),
+			path.join(searchDirectory, 'notes.txt'),
 			'first\nnEedle.\nlast\n'
 		);
-		await writeFile(path.join(searchRoot, 'other.txt'), 'NEEDLE.\n');
+		await writeFile(path.join(searchDirectory, 'other.txt'), 'NEEDLE.\n');
 
 		const first = {
 			path: 'notes.txt',
@@ -213,9 +260,11 @@ defineSandboxProviderTests({
 			glob: '*.txt',
 			context: 1
 		};
-		const metadata = await stat(seeded);
-		const directory = path.join(workspace, 'new', 'nested');
-		const destination = path.join(directory, 'file');
+		const directory = 'new/nested';
+		const destination =
+			selection?.mode === 'open' && !policy.hostWorkspaceWrites
+				? 'seeded/data'
+				: path.join(directory, 'file');
 
 		allocations.set(workspace, resources);
 		jobs.set(workspace, new Map());
@@ -246,20 +295,30 @@ defineSandboxProviderTests({
 			read: {
 				path: 'seeded/data',
 				bytes: data,
-				missingPath: path.join(seeded, 'missing')
+				missingPath: 'seeded/missing'
 			},
 			write: {
 				directory,
 				path: destination,
-				read: async () => new Uint8Array(await readFile(destination))
+				async read() {
+					const filename = path.join(targetFor(workspace).root, destination);
+
+					return new Uint8Array(await readFile(filename));
+				}
 			},
 			list: {
-				path: seeded,
-				stat: { kind: 'directory', size: metadata.size },
+				path: 'seeded',
+				async stat() {
+					const metadata = await stat(
+						path.join(targetFor(workspace).root, 'seeded')
+					);
+
+					return { kind: 'directory', size: metadata.size };
+				},
 				entries: [{ name: 'data', kind: 'file' }]
 			},
 			hostWorkspace: workspace,
-			policy: defaultPolicy,
+			policy,
 			processes: [
 				{
 					request: {
@@ -289,12 +348,31 @@ defineSandboxProviderTests({
 				request: {
 					kind: 'shell',
 					dialect: 'sh',
-					command: `${startDescendant('')}; printf ready; wait "$child"`
+					command: `cd "$HOME" || exit 1; ${startDescendant('')}; printf ready; wait "$child"`
 				},
 				ready: new TextEncoder().encode('ready'),
 				verifyStopped: () => verifyStopped(workspace)
 			},
 			async verifyPolicy(backend, context) {
+				const alias = path.join(backend.workspace.root, 'outside-alias');
+
+				await symlink(outside, alias);
+				await expect(
+					backend.files?.write?.writeFile(
+						alias,
+						Buffer.from('changed'),
+						context
+					)
+				).rejects.toSatisfy(isDenied);
+
+				if (policy.hostUserData === 'denied') {
+					await expect(
+						backend.files?.read?.readFile(alias, context)
+					).rejects.toSatisfy(isDenied);
+				}
+
+				expect(await readFile(outside, 'utf8')).toBe('host-only');
+
 				const output: Uint8Array[] = [];
 				const result = await backend.exec(
 					shell(
@@ -315,7 +393,8 @@ defineSandboxProviderTests({
 					output: Buffer.concat(output).toString()
 				}).toStrictEqual({
 					result: { kind: 'exited', exit: { kind: 'code', code: 0 } },
-					output: 'system'
+					output:
+						policy.hostUserData === 'denied' ? 'system' : 'systemhost-only'
 				});
 			},
 			async verifyDisposed(backend, recovery) {
@@ -358,8 +437,16 @@ defineSandboxProviderTests({
 				expect(remaining).toStrictEqual([]);
 				allocations.delete(workspace);
 				jobs.delete(workspace);
+				targets.delete(workspace);
 				await rm(root, { recursive: true, force: true });
 			}
 		};
 	}
+};
+
+defineSandboxProviderTests(suite);
+defineSandboxProviderTests({
+	...suite,
+	label: `MXC ${process.platform}/${process.arch} shared workspace`,
+	workspaceVisibility: 'shared'
 });

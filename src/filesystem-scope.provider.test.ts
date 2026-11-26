@@ -4,28 +4,36 @@ import {
 	readFile,
 	realpath,
 	rm,
+	symlink,
 	writeFile
 } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import type {
 	SandboxBackend,
 	SandboxCopySource,
 	SandboxOpenContext,
 	SandboxOpenRequest
 } from 'pi-bring-your-own-sandbox/provider';
-import { UnsupportedSandboxPolicyError } from 'pi-bring-your-own-sandbox/provider';
+import {
+	credentialLocations,
+	registerSandboxProviderFactory,
+	UnsupportedSandboxPolicyError
+} from 'pi-bring-your-own-sandbox/provider';
 import { assert, expect, it, vi } from 'vitest';
 
 import { MxcBackend } from './backend.js';
-import type { MxcConfig } from './config.js';
+import type { MxcConfig, MxcSettings } from './config.js';
 import { validateConfig } from './config.js';
 import { cleanupControl } from './fixtures/cleanup.js';
 import { withNativeSandbox } from './fixtures/native-sandbox.js';
 import { fixtureProfile } from './fixtures/profiles.js';
 import { systemHost } from './host.js';
 import { profilesFor } from './policy.js';
+import { createProvider, providerDeclaration } from './provider.js';
+import { readSettings } from './settings.js';
 import { quote } from './shell.js';
 
 it('reads system files but cannot discover or read a private home entry', async () => {
@@ -372,6 +380,115 @@ const redirectionProbe = devices
 	)
 	.join('; ');
 const macProfiles = profilesFor('darwin');
+
+it
+	.runIf(process.platform === 'darwin')
+	.each([
+		...macProfiles.open
+			.filter(({ policy }) => policy.hostUserData === 'read-only')
+			.map(({ policy }) => ({ mode: 'open', policy }) as const),
+		...macProfiles.copy
+			.filter(({ policy }) => policy.hostUserData === 'read-only')
+			.map(({ policy }) => ({ mode: 'copy', policy }) as const)
+	])(
+	'checks SDK credential exclusions at original host paths for $mode with network $policy.network and workspace writes $policy.hostWorkspaceWrites',
+	async ({ mode, policy }) => {
+		const temporary = await mkdtemp(path.join(tmpdir(), 'mxc-credentials-'));
+		const home = await realpath(temporary);
+		const host = {
+			...systemHost,
+			environment: { ...systemHost.environment, homeDirectory: home }
+		};
+		const ordinary = path.join(home, 'ordinary');
+		const markers = credentialLocations.map((location, index) => ({
+			path: path.join(home, location.slice(2)),
+			alias: path.join(home, `alias-${String(index)}`),
+			contents: `synthetic marker ${String(index)}`
+		}));
+
+		try {
+			await writeFile(ordinary, 'ordinary');
+
+			for (const marker of markers) {
+				await mkdir(path.dirname(marker.path), { recursive: true });
+				await writeFile(marker.path, marker.contents);
+				await symlink(marker.path, marker.alias);
+			}
+
+			await withNativeSandbox(
+				{},
+				async (sandbox) => {
+					const copy = mode === 'copy' ? await sandbox.copy() : undefined;
+					const target = copy?.sandbox ?? sandbox;
+					const paths = markers.flatMap((marker) => [
+						marker.path,
+						marker.alias
+					]);
+					const operands = paths.map((filename) => quote(filename)).join(' ');
+
+					try {
+						const result = await target.exec({
+							kind: 'shell',
+							dialect: 'sh',
+							command: String.raw`for entry in ${operands}; do
+							if cat "$entry" >/dev/null 2>&1; then printf 'read %s\n' "$entry"; fi
+							if (printf changed > "$entry") 2>/dev/null; then printf 'write %s\n' "$entry"; fi
+						done`
+						});
+						const bytes = await target.files.readFile(ordinary);
+						const found = await Promise.all(
+							markers.map((marker) => readFile(marker.path, 'utf8'))
+						);
+
+						expect({
+							exit: result.exit,
+							stdout: new TextDecoder().decode(result.stdout),
+							ordinary: new TextDecoder().decode(bytes),
+							markers: found
+						}).toStrictEqual({
+							exit: { kind: 'code', code: 0 },
+							stdout: '',
+							ordinary: 'ordinary',
+							markers: markers.map((marker) => marker.contents)
+						});
+					} finally {
+						if (copy !== undefined) {
+							expect(await copy.close()).toStrictEqual({
+								confirmed: true,
+								failures: [],
+								recoveries: []
+							});
+						}
+					}
+				},
+				{
+					policy,
+					installProvider(pi) {
+						registerSandboxProviderFactory<MxcConfig, MxcSettings>(
+							pi,
+							import.meta.filename,
+							providerDeclaration,
+							() => ({
+								...createProvider(),
+								open: (request, context) =>
+									MxcBackend.open(request, context, { host }),
+								copy: (request, context) =>
+									MxcBackend.open(request, context, { host }, request.source)
+							}),
+							{
+								configure: (_context, schema) =>
+									readSettings(host.fs, getAgentDir(), schema)
+							}
+						);
+					}
+				}
+			);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	},
+	20_000
+);
 
 it
 	.runIf(process.platform === 'darwin')
