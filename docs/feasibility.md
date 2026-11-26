@@ -199,7 +199,7 @@ under `/System`, `/Library`, `/usr` and `/private/etc`. A probe could not list
 or read the macOS home directory, but `stat` of `~/.ssh` succeeded because
 Seatbelt allows metadata reads.
 
-With BYOS at `9608733`, the settings use `policy.hostUserData`.
+The redesigned BYOS settings use `policy.hostUserData`.
 `src/filesystem-scope.provider.test.ts` checks that a denied profile reads
 `/etc/hosts` and cannot read a host home fixture. On macOS the same suite checks
 that a read-only profile can read ordinary files while the shell and file

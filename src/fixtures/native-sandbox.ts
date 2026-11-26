@@ -16,10 +16,11 @@ import { quote } from '../shell.js';
 
 import { CommandChecks } from './command-checks.js';
 import { withPiRuntime } from './pi-runtime.js';
+import { defaultPolicy } from './profiles.js';
 
 interface NativeSandboxOptions {
 	/**
-	The configured policy. Omission uses the SDK default.
+	The configured policy. The fixture defaults to denying host user data.
 	*/
 	readonly policy?: unknown;
 	readonly requirements?: SandboxAcquireOptions;
@@ -96,7 +97,7 @@ export async function withNativeSandbox(
 					path.join(personal, SETTINGS_FILE),
 					JSON.stringify({
 						...config,
-						policy: options.policy,
+						policy: options.policy ?? defaultPolicy,
 						cleanup: { cancellationGraceMs: 10_000, disposalTimeoutMs: 15_000 }
 					})
 				);

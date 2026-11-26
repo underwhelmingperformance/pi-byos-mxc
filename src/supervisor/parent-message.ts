@@ -43,7 +43,11 @@ function isStart(message: Record<string, unknown>): boolean {
 		isPathList(message.readwritePaths) &&
 		isEnvironment(message.environment) &&
 		isPathList(message.readonlyPaths) &&
-		isPathList(message.deniedPaths)
+		isPathList(message.deniedPaths) &&
+		(message.credentialGrants === undefined ||
+			(isRecord(message.credentialGrants) &&
+				isPathList(message.credentialGrants.read) &&
+				isPathList(message.credentialGrants.write)))
 	);
 }
 

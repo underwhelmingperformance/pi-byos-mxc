@@ -7,7 +7,13 @@ import { assert, expect, it } from 'vitest';
 
 import { CommandChecks } from './fixtures/command-checks.js';
 import { withPiRuntime } from './fixtures/pi-runtime.js';
+import { defaultHostUserData } from './fixtures/profiles.js';
 import { ScriptedModel } from './fixtures/scripted-model.js';
+
+const hostUserData =
+	defaultHostUserData === 'denied'
+		? 'denied'
+		: 'read-only (credential locations excluded)';
 
 it.runIf(process.platform === 'darwin')(
 	'opens a private review for a pending shell call from the installed MXC package',
@@ -107,7 +113,7 @@ it.runIf(process.platform === 'darwin')(
 						{ type: 'text', text: 'edited' },
 						{
 							type: 'text',
-							text: 'Effective restrictions: Host workspace writes allowed, network denied, host user data denied, host system files read-only'
+							text: `Effective restrictions: Host workspace writes allowed, network denied, host user data ${hostUserData}, host system files read-only`
 						}
 					],
 					errors: []

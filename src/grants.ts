@@ -6,35 +6,14 @@ import type {
 	SandboxOpenRequest,
 	SandboxPolicy
 } from 'pi-bring-your-own-sandbox/provider';
-import { UnsupportedSandboxPolicyError } from 'pi-bring-your-own-sandbox/provider';
+import {
+	credentialLocations,
+	UnsupportedSandboxPolicyError
+} from 'pi-bring-your-own-sandbox/provider';
 
 import type { MxcConfig } from './config.js';
 import type { HostFileSystem } from './host.js';
 import { isPathWithin } from './paths.js';
-
-const credentialLocations = [
-	'.ssh',
-	'.aws',
-	'.gnupg',
-	'.netrc',
-	'.git-credentials',
-	'.config/gh',
-	'.docker/config.json',
-	'.kube',
-	'.config/gcloud',
-	'.azure',
-	'.pypirc',
-	'.password-store',
-	'Library/Keychains',
-	'.local/share/keyrings',
-	'Library/Application Support/Google/Chrome',
-	'Library/Application Support/Firefox',
-	'Library/Safari',
-	'Library/Cookies',
-	'.mozilla',
-	'.config/google-chrome',
-	'.config/chromium'
-];
 
 function isMissing(error: unknown): boolean {
 	return error instanceof Error && 'code' in error && error.code === 'ENOENT';
@@ -65,7 +44,7 @@ export async function credentialPaths(
 	home: string
 ): Promise<readonly string[]> {
 	const paths = credentialLocations.map((location) =>
-		path.join(home, location)
+		path.join(home, location.slice(2))
 	);
 	const canonical = await Promise.all(
 		paths.map((filename) => canonicalGrantPath(fs, filename))
@@ -83,6 +62,7 @@ interface GrantPlan {
 	readonly mappings: readonly GrantedPath[];
 	readonly extraReads: readonly string[];
 	readonly extraWrites: readonly string[];
+	readonly credentialGrants: { read: string[]; write: string[] };
 }
 
 export async function planPathGrants(
@@ -94,7 +74,8 @@ export async function planPathGrants(
 		workspace,
 		hostHome,
 		targetHome,
-		denied,
+		credentials,
+		hasGeneratedCredentialDenies,
 		protectedWrites,
 		policy
 	}: {
@@ -102,7 +83,8 @@ export async function planPathGrants(
 		readonly workspace: string;
 		readonly hostHome: string;
 		readonly targetHome: string;
-		readonly denied: readonly string[];
+		readonly credentials: readonly string[];
+		readonly hasGeneratedCredentialDenies: boolean;
 		readonly protectedWrites: readonly string[];
 		readonly policy: SandboxPolicy;
 	}
@@ -110,6 +92,10 @@ export async function planPathGrants(
 	const mappings: GrantedPath[] = [];
 	const extras: Record<GrantedPath['kind'], string[]> = { read: [], write: [] };
 	const linked = new Set<string>();
+	const credentialGrants: Record<GrantedPath['kind'], string[]> = {
+		read: [],
+		write: []
+	};
 
 	const entries = (['read', 'write'] as const)
 		.flatMap((kind) =>
@@ -130,13 +116,18 @@ export async function planPathGrants(
 				}
 			});
 
-		if (denied.some((entry) => hasOverlap(entry, hostPath))) {
-			context.reportDiagnostic({
-				level: 'warning',
-				message: 'MXC cannot grant access to credential locations.'
-			});
+		if (credentials.some((entry) => isPathWithin(entry, hostPath))) {
+			if (hasGeneratedCredentialDenies) {
+				context.reportDiagnostic({
+					level: 'warning',
+					message:
+						'The macOS open-egress profile cannot grant one credential path while keeping its directory protected.'
+				});
 
-			throw refusal();
+				throw refusal();
+			}
+
+			credentialGrants[kind].push(hostPath);
 		}
 
 		if (isPathWithin(hostWorkspace, hostPath)) {
@@ -193,6 +184,7 @@ export async function planPathGrants(
 		extraReads: extras.read.filter((filename) =>
 			extras.write.every((entry) => !isPathWithin(entry, filename))
 		),
-		extraWrites: extras.write
+		extraWrites: extras.write,
+		credentialGrants
 	};
 }

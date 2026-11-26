@@ -22,6 +22,21 @@ const start = {
 const messages: readonly { readonly name: string; readonly value: unknown }[] =
 	[
 		{ name: 'start', value: start },
+		{
+			name: 'credential grants',
+			value: {
+				...start,
+				credentialGrants: { read: ['/home/.ssh/key'], write: [] }
+			}
+		},
+		{
+			name: 'relative credential grant',
+			value: { ...start, credentialGrants: { read: ['key'], write: [] } }
+		},
+		{
+			name: 'missing credential writes',
+			value: { ...start, credentialGrants: { read: [] } }
+		},
 		{ name: 'release', value: { version: 1, kind: 'release', id } },
 		{ name: 'cancel', value: { version: 1, kind: 'cancel', id } },
 		{ name: 'extra property', value: { ...start, extra: true } },
@@ -73,5 +88,11 @@ it('accepts exactly the parent messages that the protocol schema accepts', () =>
 		messages
 			.filter(({ value }) => isParentMessage(value))
 			.map(({ name }) => name)
-	).toStrictEqual(['start', 'release', 'cancel', 'extra property']);
+	).toStrictEqual([
+		'start',
+		'credential grants',
+		'release',
+		'cancel',
+		'extra property'
+	]);
 });

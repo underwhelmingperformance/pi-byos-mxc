@@ -12,6 +12,26 @@ function subtree(filename: string): string {
 	return `(subpath ${JSON.stringify(filename)})`;
 }
 
+function deniedPath(
+	operation: 'file-read*' | 'file-write*',
+	filename: string,
+	grants: readonly string[]
+): readonly string[] {
+	const exceptions = grants.filter((grant) => isPathWithin(filename, grant));
+
+	if (exceptions.includes(filename)) {
+		return [];
+	}
+
+	const root = subtree(filename);
+	const filter =
+		exceptions.length === 0
+			? root
+			: `(require-all ${root} ${exceptions.map((grant) => `(require-not ${subtree(grant)})`).join(' ')})`;
+
+	return [`(deny ${operation} ${filter})`];
+}
+
 export function offlineProfile(request: StartMessage): string {
 	const read = [
 		...request.readonlyPaths,
@@ -45,8 +65,17 @@ export function offlineProfile(request: StartMessage): string {
 				request.readwritePaths.some((root) => isPathWithin(root, p))
 			)
 			.map((p) => `(deny file-write* ${subtree(p)})`),
-		...request.deniedPaths.map(
-			(p) => `(deny file-read* file-write* ${subtree(p)})`
-		)
+		...request.deniedPaths.flatMap((filename) => [
+			...deniedPath(
+				'file-read*',
+				filename,
+				request.credentialGrants?.read ?? []
+			),
+			...deniedPath(
+				'file-write*',
+				filename,
+				request.credentialGrants?.write ?? []
+			)
+		])
 	].join('\n');
 }

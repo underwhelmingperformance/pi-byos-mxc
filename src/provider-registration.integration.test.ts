@@ -16,7 +16,7 @@ import { expect, it, vi } from 'vitest';
 import type { MxcConfig, MxcSettings } from './config.js';
 import { CommandChecks } from './fixtures/command-checks.js';
 import { withPiRuntime } from './fixtures/pi-runtime.js';
-import { defaultPolicy } from './fixtures/profiles.js';
+import { defaultHostUserData, defaultPolicy } from './fixtures/profiles.js';
 import { systemHost } from './host.js';
 import { profilesFor } from './policy.js';
 import { provider } from './provider.js';
@@ -47,7 +47,7 @@ it.each<SettingsCase>([
 	{
 		label: 'missing settings file',
 		contents: undefined,
-		expected: [defaultPolicy],
+		expected: [{ ...defaultPolicy, hostUserData: defaultHostUserData }],
 		error: 'SandboxStartupError',
 		parsed: { configuration: {}, settings: {} }
 	},

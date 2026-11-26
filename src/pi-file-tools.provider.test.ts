@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { assert, expect, it } from 'vitest';
 
 import { withPiRuntime } from './fixtures/pi-runtime.js';
+import { defaultPolicy } from './fixtures/profiles.js';
 import { compareText } from './paths.js';
 
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -43,7 +44,11 @@ it.each([
 				includeBuiltins: true,
 				extensionPaths: [packageRoot],
 				...(tools && { tools }),
-				async prepare(workspace) {
+				async prepare(workspace, agentDirectory) {
+					await writeFile(
+						path.join(agentDirectory, 'mxc-sandbox.json'),
+						JSON.stringify({ policy: defaultPolicy })
+					);
 					await writeFile(path.join(workspace, 'inside'), 'inside');
 					await symlink(
 						new URL('../package.json', import.meta.url),
@@ -165,6 +170,7 @@ it.runIf(process.platform === 'darwin')(
 					await writeFile(
 						path.join(agentDirectory, 'mxc-sandbox.json'),
 						JSON.stringify({
+							policy: defaultPolicy,
 							protectPaths: ['locked']
 						})
 					);

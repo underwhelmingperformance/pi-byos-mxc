@@ -10,7 +10,14 @@ import mxc from './extension.js';
 import { CommandChecks } from './fixtures/command-checks.js';
 import { withNativeSandbox } from './fixtures/native-sandbox.js';
 import { withPiRuntime } from './fixtures/pi-runtime.js';
+import { defaultHostUserData } from './fixtures/profiles.js';
 import { ScriptedModel } from './fixtures/scripted-model.js';
+
+const hostUserData =
+	defaultHostUserData === 'denied'
+		? 'denied'
+		: 'read-only (credential locations excluded)';
+
 import mxcPackage from './mxc.js';
 
 async function configure(
@@ -67,11 +74,13 @@ it('uses real shell consumers and releases the old allocation on session replace
 									exit: result.exit,
 									stdout: new TextDecoder().decode(result.stdout),
 									contents,
-									capabilities: sandbox.capabilities
+									capabilities: sandbox.capabilities,
+									hostUserData: sandbox.policy.hostUserData
 								}).toStrictEqual({
 									exit: { kind: 'code', code: 0 },
 									stdout: 'target',
 									contents: 'shared',
+									hostUserData: defaultHostUserData,
 									capabilities: {
 										operations: [
 											'exec',
@@ -236,7 +245,7 @@ it.each([
 									? [
 											{
 												type: 'text',
-												text: 'Effective restrictions: Host workspace writes allowed, network denied, host user data denied, host system files read-only'
+												text: `Effective restrictions: Host workspace writes allowed, network denied, host user data ${hostUserData}, host system files read-only`
 											}
 										]
 									: [])

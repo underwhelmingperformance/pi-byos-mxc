@@ -64,6 +64,13 @@ import { SupervisorJob } from './supervisor/client.js';
 import type { StartMessage } from './supervisor/protocol.js';
 import { MAX_START_BYTES } from './supervisor/protocol.js';
 
+const SEATBELT_ROOT_WRITE_EXCEPTIONS = [
+	'/dev/null',
+	'/dev/zero',
+	'/dev/random',
+	'/dev/urandom'
+];
+
 type JobRunner = Pick<SupervisorJob, 'run' | 'limitCleanup'>;
 
 interface BackendDependencies {
@@ -329,7 +336,9 @@ export class MxcBackend implements SandboxBackend {
 				workspace,
 				hostHome,
 				targetHome: store.scratch,
-				denied: credentials,
+				credentials,
+				hasGeneratedCredentialDenies:
+					hasHostReads && runtime.backend === 'seatbelt' && policy.network,
 				protectedWrites: [
 					store.root,
 					...runtime.protectedPaths,
@@ -346,7 +355,9 @@ export class MxcBackend implements SandboxBackend {
 				dependencies,
 				relationship,
 				grants,
-				hasHostReads ? credentials : []
+				hasHostReads || networkMode(runtime.backend, policy) === 'denied'
+					? credentials
+					: []
 			);
 			const probeContext: BackendProcessContext = {
 				...context,
@@ -446,7 +457,7 @@ export class MxcBackend implements SandboxBackend {
 	readonly #store: RecoveryStore;
 	readonly #grants: Pick<
 		StartMessage,
-		'readwritePaths' | 'readonlyPaths' | 'deniedPaths'
+		'readwritePaths' | 'readonlyPaths' | 'deniedPaths' | 'credentialGrants'
 	>;
 	readonly #network: StartMessage['network'];
 	readonly #lifetime = new AbortController();
@@ -514,14 +525,22 @@ export class MxcBackend implements SandboxBackend {
 						: 'Shared host workspace, read-only inside the sandbox; host changes are visible. Private writable home/scratch lasts until generation disposal.'
 		});
 		this.recovery = store.recovery;
+
+		const hasReadOnlyRoot = profile.policy.hostUserData === 'read-only';
+		const isGeneratedSeatbelt =
+			runtime.backend === 'seatbelt' && this.#network === 'open-egress';
+
 		this.#grants = {
 			readwritePaths: [
 				store.scratch,
 				...grants.extraWrites,
-				...(isWritable ? [runtime.workspace, ...runtime.protection.pins] : [])
+				...(isWritable ? [runtime.workspace, ...runtime.protection.pins] : []),
+				...(hasReadOnlyRoot && isGeneratedSeatbelt
+					? SEATBELT_ROOT_WRITE_EXCEPTIONS
+					: [])
 			],
 			readonlyPaths: [
-				...(profile.policy.hostUserData === 'read-only' ? ['/'] : []),
+				...(hasReadOnlyRoot ? ['/'] : []),
 				...runtime.readonlyPaths,
 				...grants.extraReads,
 				...(isWritable
@@ -531,7 +550,10 @@ export class MxcBackend implements SandboxBackend {
 						]
 					: [runtime.workspace])
 			],
-			deniedPaths: [...deniedPaths]
+			deniedPaths: [...deniedPaths],
+			...(this.#network === 'denied' && {
+				credentialGrants: grants.credentialGrants
+			})
 		};
 
 		const helper = path.resolve(path.dirname(runtime.entry), '../native/files');
@@ -588,6 +610,9 @@ export class MxcBackend implements SandboxBackend {
 			id,
 			backend: this.#runtime.backend,
 			network: this.#network,
+			...(this.#grants.credentialGrants !== undefined && {
+				credentialGrants: this.#grants.credentialGrants
+			}),
 			command: request.command,
 			shell,
 			cwd,

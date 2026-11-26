@@ -11,6 +11,7 @@ import path from 'node:path';
 
 import type {
 	SandboxBackend,
+	SandboxCopySource,
 	SandboxOpenContext,
 	SandboxOpenRequest
 } from 'pi-bring-your-own-sandbox/provider';
@@ -24,6 +25,7 @@ import { cleanupControl } from './fixtures/cleanup.js';
 import { withNativeSandbox } from './fixtures/native-sandbox.js';
 import { fixtureProfile } from './fixtures/profiles.js';
 import { systemHost } from './host.js';
+import { profilesFor } from './policy.js';
 import { quote } from './shell.js';
 
 it('reads system files but cannot discover or read a private home entry', async () => {
@@ -56,7 +58,10 @@ async function withFixtureHome(
 		context: SandboxOpenContext & {
 			reportDiagnostic: ReturnType<typeof vi.fn>;
 		};
-		open: (request: SandboxOpenRequest<MxcConfig>) => Promise<SandboxBackend>;
+		open: (
+			request: SandboxOpenRequest<MxcConfig>,
+			source?: SandboxCopySource
+		) => Promise<SandboxBackend>;
 	}) => Promise<void>
 ) {
 	const temporary = await mkdtemp(path.join(tmpdir(), 'mxc-host-data-'));
@@ -93,8 +98,13 @@ async function withFixtureHome(
 			home,
 			request,
 			context,
-			async open(options) {
-				const backend = await MxcBackend.open(options, context, { host });
+			async open(options, source) {
+				const backend = await MxcBackend.open(
+					options,
+					context,
+					{ host },
+					source
+				);
 
 				allocated.push(backend);
 
@@ -250,8 +260,66 @@ it('maps exact read and write grants under the private home', async () => {
 	});
 });
 
-it.each(['read', 'write'] as const)(
-	'refuses a credential %s grant with a path diagnostic',
+it.runIf(process.platform === 'darwin').each([
+	{ network: false, hostUserData: 'read-only' },
+	{ network: true, hostUserData: 'denied' }
+] as const)(
+	'exposes only the approved credential file with network $network and host user data $hostUserData',
+	async ({ network, hostUserData }) => {
+		await withFixtureHome(async ({ home, request, context, open }) => {
+			const approved = path.join(home, '.ssh', 'approved');
+			const sibling = path.join(home, '.ssh', 'sibling');
+			const aws = path.join(home, '.aws', 'marker');
+
+			await mkdir(path.dirname(approved));
+			await mkdir(path.dirname(aws));
+			await writeFile(approved, 'approved');
+			await writeFile(sibling, 'private ssh');
+			await writeFile(aws, 'private aws');
+
+			const backend = await open({
+				...request,
+				profile: fixtureProfile({ network, hostUserData }),
+				paths: { read: [approved] }
+			});
+			const targetHome = backend.workspace.home;
+			const reads = backend.files?.read;
+
+			assert(targetHome);
+			assert(reads);
+
+			const target = path.join(targetHome, '.ssh', 'approved');
+			const shell = await run(
+				backend,
+				`cat "$HOME/.ssh/approved"; cat ${quote(sibling)} ${quote(aws)} 2>/dev/null; true`,
+				context
+			);
+
+			expect({
+				shell,
+				file: Buffer.from(await reads.readFile(target, context)).toString(),
+				grants: backend.grantedPaths
+			}).toStrictEqual({
+				shell: {
+					result: { kind: 'exited', exit: { kind: 'code', code: 0 } },
+					stdout: 'approved'
+				},
+				file: 'approved',
+				grants: [{ kind: 'read', hostPath: approved, targetPath: target }]
+			});
+
+			for (const file of [sibling, aws]) {
+				await expect(reads.readFile(file, context)).rejects.toHaveProperty(
+					'name',
+					'SandboxPermissionDeniedError'
+				);
+			}
+		});
+	}
+);
+
+it.runIf(process.platform === 'darwin').each(['read', 'write'] as const)(
+	'refuses an open-egress credential %s grant with a path diagnostic',
 	async (kind) => {
 		await withFixtureHome(async ({ home, request, context, open }) => {
 			const credential = path.join(home, '.ssh', 'marker');
@@ -259,6 +327,7 @@ it.each(['read', 'write'] as const)(
 			await expect(
 				open({
 					...request,
+					profile: fixtureProfile({ network: true, hostUserData: 'read-only' }),
 					paths: { [kind]: [credential] }
 				})
 			).rejects.toStrictEqual(
@@ -277,10 +346,108 @@ it.each(['read', 'write'] as const)(
 				[
 					{
 						level: 'warning',
-						message: 'MXC cannot grant access to credential locations.'
+						message:
+							'The macOS open-egress profile cannot grant one credential path while keeping its directory protected.'
 					}
 				]
 			]);
+		});
+	}
+);
+
+const devices = [
+	'/dev/null',
+	'/dev/zero',
+	'/dev/random',
+	'/dev/urandom',
+	'/dev/stdout',
+	'/dev/stderr',
+	'/dev/fd/2'
+];
+const redirectionProbe = devices
+	.map(
+		(device) =>
+			`/bin/sh -c ${quote(`: > ${device}`)}; printf '%s=%s\n' ${device} "$?"`
+	)
+	.join('; ');
+const macProfiles = profilesFor('darwin');
+
+it
+	.runIf(process.platform === 'darwin')
+	.each([
+		...macProfiles.open.map(
+			(profile) => ({ operation: 'open', profile }) as const
+		),
+		...macProfiles.copy.map(
+			(profile) => ({ operation: 'copy', profile }) as const
+		)
+	])(
+	'supports device redirection and writable directories in macOS $operation with network $profile.policy.network, user data $profile.policy.hostUserData and host workspace writes $profile.policy.hostWorkspaceWrites',
+	async ({ operation, profile }) => {
+		await withFixtureHome(async ({ request, context, open }) => {
+			const source =
+				operation === 'copy' ? ({ kind: 'host' } as const) : undefined;
+			const backend = await open({ ...request, profile }, source);
+			const isWritable =
+				source !== undefined || profile.policy.hostWorkspaceWrites;
+			const scratch = backend.workspace.home;
+
+			assert(scratch);
+
+			const redirections = await run(backend, redirectionProbe, context);
+			const inherited = await run(
+				backend,
+				'printf stdout >&1 && printf stderr >&2',
+				context
+			);
+			const homeWrite = await run(
+				backend,
+				'printf scratch > "$HOME/home-probe"',
+				context
+			);
+			const homeContents = await readFile(
+				path.join(scratch, 'home-probe'),
+				'utf8'
+			);
+			const write = isWritable
+				? await run(backend, 'printf written > workspace-probe', context)
+				: undefined;
+			const contents = isWritable
+				? await readFile(
+						path.join(backend.workspace.root, 'workspace-probe'),
+						'utf8'
+					)
+				: undefined;
+			const succeeded = {
+				result: { kind: 'exited', exit: { kind: 'code', code: 0 } },
+				stdout: ''
+			};
+			const deviceResults = profile.policy.network
+				? [0, 0, 0, 0, 1, 1, 1]
+				: [0, 1, 1, 1, 1, 1, 1];
+
+			expect({
+				redirections,
+				inherited,
+				homeWrite,
+				homeContents,
+				write,
+				contents
+			}).toStrictEqual({
+				redirections: {
+					...succeeded,
+					stdout: devices
+						.map(
+							(device, index) => `${device}=${String(deviceResults[index])}\n`
+						)
+						.join('')
+				},
+				inherited: { ...succeeded, stdout: 'stdout' },
+				homeWrite: succeeded,
+				homeContents: 'scratch',
+				write: isWritable ? succeeded : undefined,
+				contents: isWritable ? 'written' : undefined
+			});
 		});
 	}
 );

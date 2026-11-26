@@ -11,6 +11,7 @@ import { assert, expect, it } from 'vitest';
 import mxc from './extension.js';
 import { CommandChecks } from './fixtures/command-checks.js';
 import { withPiRuntime } from './fixtures/pi-runtime.js';
+import { defaultPolicy } from './fixtures/profiles.js';
 import { ScopedChild } from './fixtures/scoped-child.js';
 
 async function observeExecution(
@@ -181,6 +182,7 @@ it('preserves the declared boundary when a waiting child changes session across 
 					await writeFile(
 						path.join(personal, 'mxc-sandbox.json'),
 						JSON.stringify({
+							policy: defaultPolicy,
 							protectPaths: ['readonly'],
 							cleanup: {
 								cancellationGraceMs: 10_000,

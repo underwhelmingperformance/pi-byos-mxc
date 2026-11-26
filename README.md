@@ -56,13 +56,13 @@ The provider also does not stop:
 
 The tested baseline is Node **24.21.0** and **24.22.2**, pnpm **12.15.0**, Pi
 **1.5.0**, TypeBox **1.3.27** and MXC **1.0.1**. The manifest pins the BYOS SDK
-to [BYOS revision `9608733`][byos-pin]. Auto-review needs a version that uses
+to [BYOS revision `e6a9bca`][byos-pin]. Auto-review needs a version that uses
 review source identities from the redesigned SDK. A source build requires a C
 compiler and the target platform's headers. Build the archive on the target OS
 and architecture.
 
 [byos-pin]:
-  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/commit/9608733fac07dab26dc82c0260dc501d70b11be3
+  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/commit/e6a9bcabfb122bbf1c7236c11862392cb80c2b57
 
 Linux requires unprivileged user namespaces and Bubblewrap 0.5.0 or newer. Open
 egress needs additional slirp, iproute2, util-linux and firewall prerequisites.
@@ -202,7 +202,7 @@ match the SDK default policy at the pinned revision.
   "policy": {
     "hostWorkspaceWrites": true,
     "network": false,
-    "hostUserData": "denied",
+    "hostUserData": "read-only",
     "hostSystemFiles": "read-only"
   },
   "protectPaths": [".husky"]
@@ -307,10 +307,12 @@ Every profile allows host system reads and prevents general host system writes.
 A `hostUserData: "denied"` profile excludes other host user files. A macOS
 `hostUserData: "read-only"` profile can read those files except known credential
 locations under the host home directory. The [credential path list][credentials]
-includes SSH, AWS and Git credentials, keychains, keyrings and browser profiles.
-Seatbelt may expose metadata for files outside the readable paths.
+comes from the SDK and includes SSH, AWS and Git credentials, keychains,
+keyrings and browser profiles. Seatbelt may expose metadata for files outside
+the readable paths.
 
-[credentials]: src/grants.ts
+[credentials]:
+  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/e6a9bcabfb122bbf1c7236c11862392cb80c2b57/packages/sdk/src/credential-locations.ts
 
 Linux profiles narrow host user data to `denied`. Bubblewrap cannot mask an
 absent credential path inside a read-only host mount. If the host later creates
@@ -320,7 +322,12 @@ therefore need escalation path grants on Linux.
 An approved escalation can add read or write access to specific paths. Paths
 under the host home directory appear at the same relative path in the private
 target home. Other paths keep their absolute locations unless they are in the
-workspace. MXC rejects grants that overlap credential locations.
+workspace. BYOS requires an approved escalation for grants inside credential
+locations. On macOS, the native offline profiles and the open-egress profiles
+with host user data denied can grant individual credential paths. The
+open-egress profiles with read-only host user data reject credential grants
+because the generated Seatbelt rules cannot make an exception for one path
+inside a protected directory.
 
 On Linux, the adapter grants read-only access to the canonical
 `/etc/resolv.conf` target when that file lists a routable nameserver, including

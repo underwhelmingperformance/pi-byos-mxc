@@ -14,6 +14,8 @@ const version = Type.Literal(1);
 
 export const MAX_START_BYTES = 1_048_576;
 
+const absolutePaths = Type.Array(absolutePath);
+
 const startSchema = Type.Object({
 	version,
 	kind: Type.Literal('start'),
@@ -23,10 +25,16 @@ const startSchema = Type.Object({
 	command: text,
 	shell: absolutePath,
 	cwd: absolutePath,
-	readwritePaths: Type.Array(absolutePath),
+	readwritePaths: absolutePaths,
 	environment,
-	readonlyPaths: Type.Array(absolutePath),
-	deniedPaths: Type.Array(absolutePath)
+	readonlyPaths: absolutePaths,
+	deniedPaths: absolutePaths,
+	credentialGrants: Type.Optional(
+		Type.Object({
+			read: absolutePaths,
+			write: absolutePaths
+		})
+	)
 });
 
 const parentSchema = Type.Union([

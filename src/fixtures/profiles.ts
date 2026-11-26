@@ -12,6 +12,9 @@ export const defaultPolicy: SandboxPolicy = {
 	hostSystemFiles: 'read-only'
 };
 
+export const defaultHostUserData =
+	process.platform === 'darwin' ? 'read-only' : 'denied';
+
 export function fixtureProfile(
 	policy: Partial<SandboxPolicy> = {},
 	platform = process.platform,
