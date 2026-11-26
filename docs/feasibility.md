@@ -190,7 +190,7 @@ A persistent supervisor per backend would remove the 90 ms startup from every
 command. An upstream change to resolve `wait()` without polling would remove
 most of the rest.
 
-## System-read-only scope
+## Host system and user files
 
 MXC's Linux baseline binds only system locations: `/bin`, `/sbin`, `/lib*`,
 `/usr/{bin,sbin,lib*,libexec,share}`, `/etc` and the resolver directories, with
@@ -199,11 +199,13 @@ under `/System`, `/Library`, `/usr` and `/private/etc`. A probe could not list
 or read the macOS home directory, but `stat` of `~/.ssh` succeeded because
 Seatbelt allows metadata reads.
 
-`src/filesystem-scope.provider.test.ts` checks that a `system-read-only` sandbox
-reads `/etc/hosts` but cannot read a file in the host home directory or list
-that directory, and that a configured home-directory grant makes opening fail.
-With a home-directory grant under `provider-default`, the same read check fails,
-so the probe detects home access.
+With BYOS at `9608733`, the settings use `policy.hostUserData`.
+`src/filesystem-scope.provider.test.ts` checks that a denied profile reads
+`/etc/hosts` and cannot read a host home fixture. On macOS the same suite checks
+that a read-only profile can read ordinary files while the shell and file
+operations cannot read SSH and AWS entries. One credential directory is created
+after opening. The grant probe reads and writes separate fixture files through
+their mappings under the private home.
 
 ## Workspace protection
 
@@ -234,13 +236,12 @@ denied while files beside the protected path stayed writable. It also showed
 that unlinking a placeholder on the host while the sandbox runs detaches the
 mount inside: the path became writable, and a write reached the host. The
 provider therefore removes placeholders only after a command's processes have
-stopped. `src/protection.provider.test.ts` applies the `host-configuration`
-preset through Pi and BYOS and repeats the mutation matrix against real
-sandboxes, with the preset's absent entries left absent. It passes on macOS
-ARM64 and Linux ARM64. On Linux, a further test protects a nested path through
-pinned ancestors. Without the protection policy on macOS, the mutations move
-`.git` and `.pi`; without placeholders on Linux, they create `.envrc` and
-`.idea`.
+stopped. `src/protection.provider.test.ts` repeats the mutation matrix against
+real sandboxes with MXC's default protection and starts with some protected
+entries absent. It passes on macOS ARM64 and Linux ARM64. On Linux, a further
+test protects a nested path through pinned ancestors. Without the protection
+policy on macOS, the mutations move `.git` and `.pi`; without placeholders on
+Linux, they create `.envrc` and `.idea`.
 
 The separate `pnpm test:network` gate now runs with an HTTPS endpoint and a
 controlled IPv4 peer. The two HTTPS cases pass against `https://example.com`.
