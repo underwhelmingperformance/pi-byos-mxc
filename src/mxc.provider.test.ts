@@ -5,13 +5,12 @@ import {
 	mkdtemp,
 	readFile,
 	realpath,
-	rename,
 	rm,
 	stat,
 	symlink,
 	writeFile
 } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -27,7 +26,7 @@ import {
 	SandboxPathNotFoundError,
 	SandboxPermissionDeniedError
 } from 'pi-bring-your-own-sandbox/provider';
-import type { SandboxProviderTestOptions } from 'pi-bring-your-own-sandbox/testing';
+import type { SandboxProviderFixtureOptions } from 'pi-bring-your-own-sandbox/testing';
 import { defineSandboxProviderTests } from 'pi-bring-your-own-sandbox/testing';
 import { assert, expect } from 'vitest';
 
@@ -38,8 +37,9 @@ import {
 	verifyDescendantStopped
 } from './fixtures/descendant-lock.js';
 import { defaultPolicy } from './fixtures/profiles.js';
+import type { Host } from './host.js';
+import { systemHost } from './host.js';
 import { createProvider } from './provider.js';
-import { prepareRuntime } from './runtime.js';
 import { quote } from './shell.js';
 import type { JobAllocation } from './supervisor/client.js';
 import { SupervisorJob } from './supervisor/client.js';
@@ -51,6 +51,7 @@ const targets = new Map<string, { root: string; home: string }>();
 const execute = promisify(execFile);
 
 async function observedOpen(
+	host: Host,
 	request: SandboxOpenRequest<MxcConfig>,
 	context: SandboxOpenContext,
 	source?: SandboxCopySource
@@ -70,7 +71,7 @@ async function observedOpen(
 			}
 		},
 		{
-			prepareRuntime,
+			host,
 			createJob(options) {
 				return new SupervisorJob({
 					...options,
@@ -95,13 +96,21 @@ async function observedOpen(
 	return backend;
 }
 
-const testedProvider: SandboxProvider<MxcConfig> = {
-	...provider,
-	open: observedOpen,
-	...(provider.copy !== undefined && {
-		copy: (request, context) => observedOpen(request, context, request.source)
-	})
-};
+function testedProvider(): SandboxProvider<MxcConfig> {
+	const host = {
+		...systemHost,
+		environment: { ...systemHost.environment, homeDirectory: homedir() }
+	};
+
+	return {
+		...provider,
+		open: (request, context) => observedOpen(host, request, context),
+		...(provider.copy !== undefined && {
+			copy: (request, context) =>
+				observedOpen(host, request, context, request.source)
+		})
+	};
+}
 
 function targetFor(workspace: string) {
 	const target = targets.get(workspace);
@@ -162,44 +171,8 @@ function shell(command: string): ProcessRequest {
 	};
 }
 
-function contents(bytes: Uint8Array): string {
-	const octal = Array.from(
-		bytes,
-		(byte) => '\\0' + byte.toString(8).padStart(3, '0')
-	).join('');
-
-	return `printf '%b' '${octal}'`;
-}
-
-function visibilityProbe(workspace: string) {
-	const target = path.join(workspace, 'seeded/data');
-	const replacement = path.join(workspace, 'replacement');
-
-	return {
-		targetPath: target,
-		findTarget: path.join(workspace, 'seeded/new-file'),
-		readSource: () => readFile(target),
-		async replaceSource(bytes: Uint8Array) {
-			await writeFile(replacement, bytes);
-			await rename(replacement, target);
-		},
-		readTarget: shell('cat seeded/data'),
-		writeTarget: (bytes: Uint8Array) =>
-			shell(`${contents(bytes)} > staged && mv staged seeded/data`),
-		stageSave: (bytes: Uint8Array) => ({
-			prepare: shell(`${contents(bytes)} > staged`),
-			commit: shell('mv staged seeded/data')
-		}),
-		waitForReplacement: (bytes: Uint8Array) =>
-			shell(
-				`${contents(bytes)} > expected && cp expected seeded/data && printf ready && while cmp -s expected seeded/data; do sleep 0.1; done && cat seeded/data`
-			)
-	};
-}
-
-const suite: SandboxProviderTestOptions<MxcConfig> = {
+const suite: SandboxProviderFixtureOptions<MxcConfig> = {
 	label: `MXC ${process.platform}/${process.arch} declared profiles`,
-	provider: testedProvider,
 	timeoutMs: 20_000,
 	cleanup: { cancellationGraceMs: 10_000, disposalTimeoutMs: 15_000 },
 	async createFixture(selection) {
@@ -270,8 +243,8 @@ const suite: SandboxProviderTestOptions<MxcConfig> = {
 		jobs.set(workspace, new Map());
 
 		return {
+			provider: testedProvider(),
 			configuration: {},
-			visibility: visibilityProbe(workspace),
 			find: [
 				{
 					request: { path: searchRoot, pattern: '*.txt', limit: 2 },
@@ -445,8 +418,3 @@ const suite: SandboxProviderTestOptions<MxcConfig> = {
 };
 
 defineSandboxProviderTests(suite);
-defineSandboxProviderTests({
-	...suite,
-	label: `MXC ${process.platform}/${process.arch} shared workspace`,
-	workspaceVisibility: 'shared'
-});

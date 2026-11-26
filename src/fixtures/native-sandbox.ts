@@ -1,7 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import type {
 	Sandbox,
 	SandboxAcquireOptions
@@ -25,7 +24,6 @@ interface NativeSandboxOptions {
 	*/
 	readonly policy?: unknown;
 	readonly requirements?: SandboxAcquireOptions;
-	readonly installProvider?: ExtensionFactory;
 
 	/**
 	Prepares the workspace before Pi starts.
@@ -54,7 +52,7 @@ export async function withNativeSandbox(
 					initialiseSandboxHost(pi, import.meta.filename, {});
 				}
 			},
-			{ name: 'mxc', factory: options.installProvider ?? mxc },
+			{ name: 'mxc', factory: mxc },
 			{
 				name: 'consumer',
 				factory(pi) {
