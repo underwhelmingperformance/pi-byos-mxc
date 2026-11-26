@@ -362,12 +362,13 @@ const devices = [
 	'/dev/urandom',
 	'/dev/stdout',
 	'/dev/stderr',
-	'/dev/fd/2'
+	'/dev/fd/2',
+	'/dev/fd/3'
 ];
 const redirectionProbe = devices
 	.map(
 		(device) =>
-			`/bin/sh -c ${quote(`: > ${device}`)}; printf '%s=%s\n' ${device} "$?"`
+			`/bin/sh -c ${quote(`: > ${device}`)} 3>&2; printf '%s=%s\n' ${device} "$?"`
 	)
 	.join('; ');
 const macProfiles = profilesFor('darwin');
@@ -395,6 +396,11 @@ it
 			assert(scratch);
 
 			const redirections = await run(backend, redirectionProbe, context);
+			const readOnlyDescriptor = await run(
+				backend,
+				"/bin/sh -c ': > /dev/fd/3' 3</dev/null",
+				context
+			);
 			const inherited = await run(
 				backend,
 				'printf stdout >&1 && printf stderr >&2',
@@ -423,11 +429,12 @@ it
 				stdout: ''
 			};
 			const deviceResults = profile.policy.network
-				? [0, 0, 0, 0, 1, 1, 1]
-				: [0, 1, 1, 1, 1, 1, 1];
+				? [0, 0, 0, 0, 0, 0, 0, 0]
+				: [0, 1, 1, 1, 0, 0, 0, 0];
 
 			expect({
 				redirections,
+				readOnlyDescriptor,
 				inherited,
 				homeWrite,
 				homeContents,
@@ -441,6 +448,10 @@ it
 							(device, index) => `${device}=${String(deviceResults[index])}\n`
 						)
 						.join('')
+				},
+				readOnlyDescriptor: {
+					result: { kind: 'exited', exit: { kind: 'code', code: 1 } },
+					stdout: ''
 				},
 				inherited: { ...succeeded, stdout: 'stdout' },
 				homeWrite: succeeded,

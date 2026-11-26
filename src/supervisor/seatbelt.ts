@@ -58,6 +58,7 @@ export function offlineProfile(request: StartMessage): string {
 		'(allow file-read-metadata)',
 		'(allow file-read* (literal "/") (literal "/private/var/select/sh") (literal "/dev/urandom") (literal "/dev/random"))',
 		'(allow file-read* file-write-data (literal "/dev/null"))',
+		'(allow file-write* (regex #"^/dev/fd/[0-9]+$"))',
 		`(allow file-read* file-map-executable ${read.map((filename) => subtree(filename)).join(' ')})`,
 		...request.readwritePaths.map((p) => `(allow file-write* ${subtree(p)})`),
 		...request.readonlyPaths

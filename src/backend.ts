@@ -560,6 +560,7 @@ export class MxcBackend implements SandboxBackend {
 				store.scratch,
 				...grants.extraWrites,
 				...(isWritable ? [runtime.workspace, ...runtime.protection.pins] : []),
+				...(isGeneratedSeatbelt ? ['/dev/fd'] : []),
 				...(hasReadOnlyRoot && isGeneratedSeatbelt
 					? SEATBELT_ROOT_WRITE_EXCEPTIONS
 					: [])
