@@ -186,10 +186,11 @@ MXC reports the first applicable workspace constraint as a startup diagnostic:
 Other snapshot helper failures produce the generic `MXC opening failed`
 diagnostic.
 
-The shell integration includes user-shell commands and Bash escalation. The six
-file and search tools execute Pi's implementations with the same filesystem and
-network policy as a sandbox shell. This includes read path resolution, image
-decoding, edit previews and the `rg` and `fd` subprocesses.
+The SDK registers user-shell commands, Bash escalation and Pi's six file and
+search tools. Pi uses the sandbox facade for filesystem operations and edit
+previews. The SDK's file helper runs inside MXC and limits file reads and writes
+to 16 MiB per operation. Pi's `grep` uses the target's `rg` when available. Pi's
+`find` uses the provider's search operation.
 
 ### Settings
 

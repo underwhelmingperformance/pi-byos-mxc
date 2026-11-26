@@ -40,7 +40,6 @@ import {
 	ShellStartupError,
 	UnenforceablePolicyError
 } from './errors.js';
-import { sandboxFiles } from './files.js';
 import {
 	canonicalGrantPath,
 	credentialPaths,
@@ -64,6 +63,7 @@ import type { JobOptions } from './supervisor/client.js';
 import { SupervisorJob } from './supervisor/client.js';
 import type { StartMessage } from './supervisor/protocol.js';
 import { MAX_START_BYTES } from './supervisor/protocol.js';
+import { sandboxFiles } from './target-files.js';
 
 const SEATBELT_ROOT_WRITE_EXCEPTIONS = [
 	'/dev/null',
@@ -582,21 +582,19 @@ export class MxcBackend implements SandboxBackend {
 			})
 		};
 
-		const helper = path.resolve(path.dirname(runtime.entry), '../native/files');
-
 		this.files = sandboxFiles(
 			runtime.workspace,
-			helper,
+			this.#host.environment.execPath,
 			(command, context, input) =>
 				this.#run({ kind: 'shell', dialect: 'sh', command }, context, {
-					helper,
 					...(input !== undefined && { input })
-				})
+				}),
+			{ providerId: 'mxc', backendId: this.id, recovery: this.recovery }
 		);
 
 		const worker = path.resolve(
 			path.dirname(runtime.entry),
-			'../tools/search.js'
+			'../tools/search.mjs'
 		);
 
 		this.search = sandboxSearch(

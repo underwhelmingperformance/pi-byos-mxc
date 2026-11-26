@@ -2,10 +2,8 @@
 	"$schema": "https://unpkg.com/knip/schema.json",
 	"entry": [
 		"src/mxc.ts",
-		"src/pi-tools.ts",
 		"src/diagnostics.ts",
 		"src/supervisor/entry.ts",
-		"script/tool-worker.ts",
 		"script/search-worker.ts",
 		"src/**/*.test.ts"
 	],
