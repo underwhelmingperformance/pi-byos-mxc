@@ -11,6 +11,7 @@ import type {
 	ProcessExit
 } from 'pi-bring-your-own-sandbox/provider';
 import {
+	createSandboxCleanupContext,
 	InvalidSandboxRequestError,
 	SandboxOperationError,
 	SandboxTransportError
@@ -23,12 +24,6 @@ import { SYSTEM_PATH } from '../shell.js';
 
 import type { ChildMessage, ParentMessage, StartMessage } from './protocol.js';
 import { childMessage, MAX_START_BYTES } from './protocol.js';
-
-// BYOS publishes a cleanup allowance before it aborts an operation. When the job
-// stops after its own failure, such as a transport failure, BYOS has not
-// published an allowance, so the job uses this one. It matches BYOS's default
-// cancellation grace.
-const FAILURE_CLEANUP_MS = 5000;
 
 function listLocations(locations: readonly string[]): string {
 	return `${locations.slice(0, -1).join(', ')} or ${locations.at(-1) ?? ''}`;
@@ -196,10 +191,13 @@ export class SupervisorJob {
 	}
 
 	#cleanupExpiry(): number {
-		return (
-			this.#clock.monotonicTime() +
-			(this.#options.context.cleanup.remainingMs() ?? FAILURE_CLEANUP_MS)
+		const cleanup = createSandboxCleanupContext(
+			this.#options.context,
+			undefined,
+			() => this.#clock.monotonicTime()
 		);
+
+		return this.#clock.monotonicTime() + cleanup.remainingMs();
 	}
 
 	#expire(): void {

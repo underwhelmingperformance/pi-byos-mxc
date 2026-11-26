@@ -26,8 +26,15 @@ const transportFailure = new SandboxTransportError({
 
 function fixture(
 	command: string,
-	recordGate: Promise<void> = Promise.resolve(),
-	spawnSupervisor: JobOptions['spawn'] = fakeSupervisor()
+	{
+		recordGate = Promise.resolve(),
+		spawnSupervisor = fakeSupervisor(),
+		cancellationGraceMs = 5000
+	}: {
+		recordGate?: Promise<void>;
+		spawnSupervisor?: JobOptions['spawn'];
+		cancellationGraceMs?: number;
+	} = {}
 ) {
 	const clock = new FakeClock();
 	const controller = new AbortController();
@@ -42,7 +49,9 @@ function fixture(
 		controller.abort();
 	};
 
+	const cleanupBudgets = { cancellationGraceMs, disposalTimeoutMs: 10_000 };
 	const context: BackendProcessContext = {
+		cleanupBudgets,
 		operationId: randomUUID(),
 		signal: controller.signal,
 		deadline: 5000,
@@ -254,22 +263,29 @@ it('shortens the cleanup allowance when disposal limits it', async () => {
 	await expect(running).rejects.toStrictEqual(transportFailure);
 });
 
-it('does not extend a transport-failure cleanup budget when the caller later cancels', async () => {
-	const { job, faulted, clock, cancel } = fixture('fault-hang');
-	const running = job.run();
-	const isSettled = settlement(running);
+it.each([1700, 5000])(
+	'keeps the configured %i ms failure cleanup grace when the caller later cancels',
+	async (cancellationGraceMs) => {
+		const { job, faulted, clock, cancel } = fixture('fault-hang', {
+			cancellationGraceMs
+		});
+		const running = job.run();
+		const isSettled = settlement(running);
 
-	await faulted.promise;
-	await yieldImmediate();
-	clock.advance(1000);
-	cancel(10_000);
-	clock.advance(3999);
-	await yieldImmediate();
-	expect(isSettled()).toBe(false);
+		await faulted.promise;
+		await yieldImmediate();
+		clock.advance(1000);
+		cancel(10_000);
+		clock.advance(cancellationGraceMs - 1001);
+		await yieldImmediate();
+		expect(isSettled()).toBe(false);
 
-	clock.advance(1);
-	await expect(running).rejects.toStrictEqual(transportFailure);
-});
+		clock.advance(1);
+		await yieldImmediate();
+		expect(isSettled()).toBe(true);
+		await expect(running).rejects.toStrictEqual(transportFailure);
+	}
+);
 
 it.each(['cleanup-failure', 'completed-then-failed', 'duplicate-completion'])(
 	'rejects contradictory or failed finalisation without diagnostic bytes: %s',
@@ -297,7 +313,7 @@ it('does not release a target after recovery recording finishes beyond cancellat
 	const gate = Promise.withResolvers<undefined>();
 	const { job, allocated, clock, cancel, leadershipChecks, output } = fixture(
 		'hang',
-		gate.promise
+		{ recordGate: gate.promise }
 	);
 	const running = job.run();
 	const rejected = expect(running).rejects.toStrictEqual(transportFailure);
@@ -321,13 +337,11 @@ it('does not release a target after recovery recording finishes beyond cancellat
 });
 
 it('reports a supervisor that exits before receiving the job as not started', async () => {
-	const { job } = fixture(
-		'normal',
-		undefined,
-		fakeSupervisor((_port, child) => {
+	const { job } = fixture('normal', {
+		spawnSupervisor: fakeSupervisor((_port, child) => {
 			child.exit(3);
 		})
-	);
+	});
 
 	await expect(job.run()).rejects.toStrictEqual(
 		new SandboxOperationError({ operation: 'exec', providerId: 'mxc' })
