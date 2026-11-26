@@ -28,12 +28,13 @@ import {
 	verifyDescendantStopped
 } from './fixtures/descendant-lock.js';
 import { defaultPolicy } from './fixtures/profiles.js';
-import { provider } from './provider.js';
+import { createProvider } from './provider.js';
 import { prepareRuntime } from './runtime.js';
 import { quote } from './shell.js';
 import type { JobAllocation } from './supervisor/client.js';
 import { SupervisorJob } from './supervisor/client.js';
 
+const provider = createProvider();
 const allocations = new Map<string, Set<string>>();
 const jobs = new Map<string, Map<string, JobAllocation>>();
 const execute = promisify(execFile);

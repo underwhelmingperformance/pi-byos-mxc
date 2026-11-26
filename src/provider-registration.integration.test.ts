@@ -19,9 +19,10 @@ import { withPiRuntime } from './fixtures/pi-runtime.js';
 import { defaultHostUserData, defaultPolicy } from './fixtures/profiles.js';
 import { systemHost } from './host.js';
 import { profilesFor } from './policy.js';
-import { provider } from './provider.js';
+import { createProvider } from './provider.js';
 import { readSettings, SETTINGS_FILE } from './settings.js';
 
+const provider = createProvider();
 const explicit = { ...defaultPolicy, hostWorkspaceWrites: false };
 const valid = {
 	policy: explicit,

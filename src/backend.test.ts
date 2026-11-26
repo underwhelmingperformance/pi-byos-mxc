@@ -30,13 +30,25 @@ const root = '/tmp/pi-byos-mxc-00000000-0000-4000-8000-000000000001';
 const scratch = `${root}/scratch`;
 const firstJob = '00000000-0000-4000-8000-000000000004';
 const presetPaths = [
+	'/workspace/.aws',
+	'/workspace/.bash_login',
+	'/workspace/.bash_profile',
+	'/workspace/.bashrc',
+	'/workspace/.config',
 	'/workspace/.devcontainer',
 	'/workspace/.direnv',
 	'/workspace/.envrc',
 	'/workspace/.git',
 	'/workspace/.idea',
+	'/workspace/.mcp.json',
 	'/workspace/.pi',
-	'/workspace/.vscode'
+	'/workspace/.profile',
+	'/workspace/.vscode',
+	'/workspace/.zlogin',
+	'/workspace/.zlogout',
+	'/workspace/.zprofile',
+	'/workspace/.zshenv',
+	'/workspace/.zshrc'
 ];
 const exited = { kind: 'exited', exit: { kind: 'code', code: 0 } } as const;
 

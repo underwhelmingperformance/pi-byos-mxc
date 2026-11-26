@@ -1,6 +1,11 @@
 import path from 'node:path';
 
 import {
+	defaultProtectedWorkspacePaths,
+	isProtectedWorkspacePath
+} from 'pi-bring-your-own-sandbox/provider';
+
+import {
 	GitCommandError,
 	GitMetadataUnavailableError,
 	GitUnavailableError,
@@ -15,14 +20,6 @@ export type WorkspaceProtection =
 	| { readonly kind: 'git-metadata' }
 	| { readonly kind: 'path'; readonly path: string };
 
-export const HOST_CONFIGURATION_PROTECTION: readonly WorkspaceProtection[] =
-	Object.freeze([
-		Object.freeze({ kind: 'git-metadata' as const }),
-		...['.pi', '.envrc', '.direnv', '.vscode', '.idea', '.devcontainer'].map(
-			(path) => Object.freeze({ kind: 'path' as const, path })
-		)
-	]);
-
 export interface ProtectionRequest {
 	/**
 	The canonical host workspace.
@@ -31,6 +28,19 @@ export interface ProtectionRequest {
 	readonly backend: 'seatbelt' | 'bubblewrap';
 	readonly workspaceAccess: 'read-only' | 'read-write';
 	readonly resources: readonly WorkspaceProtection[];
+}
+
+export function defaultWorkspaceProtection(
+	backend: ProtectionRequest['backend']
+): readonly WorkspaceProtection[] {
+	const paths = defaultProtectedWorkspacePaths.map((filename) =>
+		backend === 'seatbelt' ? (filename.split('/', 1)[0] ?? filename) : filename
+	);
+
+	return [
+		{ kind: 'git-metadata' },
+		...paths.map((filename) => ({ kind: 'path' as const, path: filename }))
+	];
 }
 
 /**
@@ -82,7 +92,7 @@ function isMissing(error: unknown): boolean {
 class ProtectionPlan {
 	readonly #host: Host;
 	readonly #request: ProtectionRequest;
-	readonly #entries = new Set<string>();
+	#entries: readonly string[] = [];
 	readonly #readonly = new Set<string>();
 	readonly #placeholders = new Set<string>();
 	readonly #pins = new Set<string>();
@@ -110,8 +120,9 @@ class ProtectionPlan {
 		}
 
 		const topLevel = this.#topLevel(filename);
+		const relative = path.relative(this.#request.workspace, filename);
 
-		if ([...this.#entries].every((entry) => !isPathWithin(entry, filename))) {
+		if (!isProtectedWorkspacePath(relative, { paths: this.#entries })) {
 			throw new UncoveredProtectedPathError(filename, topLevel);
 		}
 	}
@@ -346,9 +357,9 @@ class ProtectionPlan {
 			compareText
 		);
 
-		for (const entry of entries) {
-			this.#entries.add(entry);
-		}
+		this.#entries = entries.map((entry) =>
+			path.relative(this.#request.workspace, entry)
+		);
 
 		for (const filename of required) {
 			this.#require(filename);

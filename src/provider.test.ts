@@ -9,7 +9,9 @@ import { expect, it } from 'vitest';
 import { validateConfig } from './config.js';
 import { cleanupControl } from './fixtures/cleanup.js';
 import { defaultPolicy, fixtureProfile } from './fixtures/profiles.js';
-import { provider } from './provider.js';
+import { createProvider } from './provider.js';
+
+const provider = createProvider();
 
 it('offers the copy operation exactly when it declares copy profiles', () => {
 	expect(typeof provider.copy).toBe(

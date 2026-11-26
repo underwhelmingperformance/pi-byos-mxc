@@ -28,7 +28,7 @@ export function sandboxFiles(
 	node: string,
 	run: RunFileCommand,
 	identity: Omit<SandboxErrorContext, 'operation'>
-): BackendFiles {
+): Required<BackendFiles> {
 	let helper: Promise<string> | undefined;
 
 	return createTargetFileOperations(

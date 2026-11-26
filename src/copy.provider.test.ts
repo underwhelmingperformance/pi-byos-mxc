@@ -23,7 +23,9 @@ import { validateConfig } from './config.js';
 import { cleanupControl } from './fixtures/cleanup.js';
 import { withNativeSandbox } from './fixtures/native-sandbox.js';
 import { defaultPolicy, fixtureProfile } from './fixtures/profiles.js';
-import { provider } from './provider.js';
+import { createProvider } from './provider.js';
+
+const provider = createProvider();
 
 it.runIf(process.platform === 'darwin')(
 	'keeps independent writable copies of the host and live MXC destination',

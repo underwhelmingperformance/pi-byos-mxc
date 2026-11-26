@@ -22,9 +22,10 @@ import type {
 import {
 	InvalidSandboxRequestError,
 	isSandboxError,
+	mapSandboxErrno,
+	resolveSandboxCopySource,
 	SandboxCleanupError,
 	SandboxPathNotFoundError,
-	SandboxPermissionDeniedError,
 	SandboxSessionClosingError,
 	SandboxStartupError,
 	ShellTransportRunner,
@@ -53,7 +54,7 @@ import { PlaceholderRegistry } from './placeholders.js';
 import { resolverSockets } from './platform/system-paths.js';
 import { networkMode, profilesFor } from './policy.js';
 import type { Protection } from './protection.js';
-import { HOST_CONFIGURATION_PROTECTION, planProtection } from './protection.js';
+import { defaultWorkspaceProtection, planProtection } from './protection.js';
 import { RecoveryStore } from './recovery.js';
 import type { MxcRuntime } from './runtime.js';
 import { prepareRuntime, verifyWorkspaceEntries } from './runtime.js';
@@ -161,21 +162,7 @@ async function workingDirectory(
 			return filename;
 		}
 	} catch (error) {
-		if (
-			error instanceof Error &&
-			'code' in error &&
-			(error.code === 'EACCES' || error.code === 'EPERM')
-		) {
-			throw new SandboxPermissionDeniedError(identity, { cause: error });
-		}
-
-		if (!(
-			error instanceof Error &&
-			'code' in error &&
-			(error.code === 'ENOENT' || error.code === 'ENOTDIR')
-		)) {
-			throw error;
-		}
+		throw mapSandboxErrno(error, identity);
 	}
 
 	throw new SandboxPathNotFoundError(identity);
@@ -205,31 +192,6 @@ async function verifyShell(
 }
 
 export class MxcBackend implements SandboxBackend {
-	static readonly #live = new Map<string, MxcBackend>();
-
-	static #resolveParent(
-		source: SandboxBackend,
-		request: SandboxOpenRequest<MxcConfig>,
-		host: Host
-	): MxcBackend {
-		const parent = MxcBackend.#live.get(source.id);
-
-		if (
-			!parent ||
-			parent !== source ||
-			parent.#sessionId !== request.sessionId ||
-			parent.#hostWorkspace !== request.hostWorkspace ||
-			parent.#host.fs !== host.fs
-		) {
-			throw new StaleSandboxHandleError({
-				operation: 'open',
-				providerId: 'mxc'
-			});
-		}
-
-		return parent;
-	}
-
 	static async open(
 		request: SandboxOpenRequest<MxcConfig>,
 		context: SandboxOpenContext,
@@ -261,13 +223,16 @@ export class MxcBackend implements SandboxBackend {
 			const { policy } = profile;
 
 			const parent =
-				source?.kind === 'backend'
-					? MxcBackend.#resolveParent(
-							source.backend,
-							request,
-							dependencies.host
-						)
-					: undefined;
+				source &&
+				resolveSandboxCopySource(
+					source,
+					(backend): backend is MxcBackend =>
+						backend instanceof this &&
+						backend.#sessionId === request.sessionId &&
+						backend.#hostWorkspace === request.hostWorkspace &&
+						backend.#host.fs === dependencies.host.fs &&
+						!backend.#lifetime.signal.aborted
+				);
 			const runtime = await dependencies.prepareRuntime(
 				parent?.workspace.root ?? request.hostWorkspace,
 				request.configuration
@@ -323,7 +288,7 @@ export class MxcBackend implements SandboxBackend {
 				backend: runtime.backend,
 				workspaceAccess: isWritable ? 'read-write' : 'read-only',
 				resources: [
-					...HOST_CONFIGURATION_PROTECTION,
+					...defaultWorkspaceProtection(runtime.backend),
 					...request.configuration.protectPaths.map((entry) => ({
 						kind: 'path' as const,
 						path: entry
@@ -392,8 +357,6 @@ export class MxcBackend implements SandboxBackend {
 					providerId: 'mxc'
 				});
 			}
-
-			MxcBackend.#live.set(backend.id, backend);
 
 			return backend;
 		} catch (error) {
@@ -480,7 +443,7 @@ export class MxcBackend implements SandboxBackend {
 	readonly workspace: SandboxWorkspace;
 	readonly profile: Profile;
 	readonly grantedPaths?: readonly GrantedPath[];
-	readonly files: BackendFiles;
+	readonly files: Required<BackendFiles>;
 	readonly search: BackendSearch;
 	readonly policyDescription: string;
 	readonly recovery: RecoveryDescriptor;
@@ -597,14 +560,17 @@ export class MxcBackend implements SandboxBackend {
 			'../tools/search.mjs'
 		);
 
-		this.search = sandboxSearch(
-			this.#host.environment.execPath,
+		this.search = sandboxSearch({
+			node: this.#host.environment.execPath,
 			worker,
-			(command, context) =>
+			workspace: runtime.workspace,
+			stat: this.files.read.stat,
+			exec: (request, context) => this.exec(request, context),
+			run: (command, context) =>
 				this.#run({ kind: 'shell', dialect: 'sh', command }, context, {
 					helper: worker
 				})
-		);
+		});
 		this.policyDescription = describePolicy(
 			runtime,
 			profile.policy,
@@ -845,8 +811,6 @@ export class MxcBackend implements SandboxBackend {
 		if (this.#disposal !== undefined) {
 			return this.#disposal;
 		}
-
-		MxcBackend.#live.delete(this.id);
 
 		const pending = Promise.withResolvers<undefined>();
 
