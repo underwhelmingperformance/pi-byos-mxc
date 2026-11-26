@@ -189,8 +189,9 @@ diagnostic.
 The SDK registers user-shell commands, Bash escalation and Pi's six file and
 search tools. Pi uses the sandbox facade for filesystem operations and edit
 previews. The SDK's file helper runs inside MXC and limits file reads and writes
-to 16 MiB per operation. Pi's `grep` uses the target's `rg` when available. Pi's
-`find` uses the provider's search operation.
+to 16 MiB per operation. The SDK's portable search helper runs under the same
+policy as ordinary shell commands. Pi's `find` uses the helper, and Pi's `grep`
+uses the target's `rg` when available and the helper otherwise.
 
 ### Settings
 
@@ -310,9 +311,9 @@ source, package scripts or build files safe to run on the host.
 MXC advertises separate profiles for the live checkout and for copies. BYOS
 selects a profile before allocation. The live checkout can be writable or
 read-only inside MXC. Host changes are visible in either case. Copies never
-write to the live checkout. Each backend has a writable private scratch
-directory. MXC removes it on successful disposal. Recovery records are stored
-separately.
+write to the live checkout. `workspace.home` is a writable private scratch
+directory and the location of home-relative path grants. MXC removes the
+directory on successful disposal. Recovery records are stored separately.
 
 Before opening a live checkout, MXC checks directory entries without following
 symlinks. If the checkout contains a socket, FIFO or device file, opening fails
@@ -320,12 +321,12 @@ with `UnsupportedSandboxPolicyError` before MXC allocates resources. Remove the
 reported entry and retry. A host process can still add entries after opening.
 
 Every profile allows host system reads and prevents general host system writes.
-A `hostUserData: "denied"` profile excludes other host user files. A macOS
-`hostUserData: "read-only"` profile can read those files except known credential
-locations under the host home directory. The [credential path list][credentials]
-comes from the SDK and includes SSH, AWS and Git credentials, keychains,
-keyrings and browser profiles. Seatbelt may expose metadata for files outside
-the readable paths.
+Profiles with `hostUserData: "denied"` exclude other host user files. On macOS,
+a profile with `hostUserData: "read-only"` reports the canonical host home in
+`workspace.hostUserDataRoot`. The profile can read host user data at its
+original paths, subject to the SDK's [credential exclusions][credentials] for
+SSH, AWS, Git, keychains, keyrings and browser profiles. Seatbelt may expose
+metadata for files outside the readable paths.
 
 [credentials]:
   https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/e8f4dfd9cc1eb413d7bd7d085552f56593929552/packages/sdk/src/credential-locations.ts
@@ -431,8 +432,8 @@ automatically readable sandbox paths.
 
 ## Packed installation and verification
 
-Build and pack on the intended platform. The archive includes the native
-helpers, the provider's search worker and the compiled BYOS SDK.
+Build and pack on the intended platform. The archive includes the native helpers
+and the compiled BYOS SDK.
 
 ```sh
 pnpm build
