@@ -17,6 +17,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
 import type { SandboxOpenContext } from 'pi-bring-your-own-sandbox/provider';
+import { defaultProtectedWorkspacePaths } from 'pi-bring-your-own-sandbox/provider';
 import { assert, expect, it } from 'vitest';
 
 import { MxcBackend } from './backend.js';
@@ -24,6 +25,7 @@ import { validateConfig } from './config.js';
 import { cleanupControl } from './fixtures/cleanup.js';
 import { nodeCommand } from './fixtures/native-sandbox.js';
 import { fixtureProfile } from './fixtures/profiles.js';
+import { compareText } from './paths.js';
 import { prepareRuntime } from './runtime.js';
 import type { JobAllocation } from './supervisor/client.js';
 import { SupervisorJob } from './supervisor/client.js';
@@ -191,10 +193,22 @@ it('retains recovery after hard supervisor death even when the platform stops th
 		const saved: unknown = JSON.parse(
 			await readFile(path.join(root, `${crashed.id}.json`), 'utf8')
 		);
+		const placeholders = new Set(
+			defaultProtectedWorkspacePaths.map((entry) => {
+				const [topLevel = entry] = entry.split('/', 1);
+
+				return path.join(workspace, topLevel);
+			})
+		);
 
 		expect({ didKill, saved }).toStrictEqual({
 			didKill: true,
-			saved: crashed
+			saved: {
+				...crashed,
+				...(process.platform === 'linux' && {
+					placeholders: [...placeholders].toSorted(compareText)
+				})
+			}
 		});
 		await expect(
 			backend.dispose({

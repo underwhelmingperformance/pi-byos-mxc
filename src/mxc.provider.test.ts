@@ -4,6 +4,7 @@ import {
 	mkdir,
 	mkdtemp,
 	readFile,
+	readlink,
 	realpath,
 	rm,
 	stat,
@@ -123,7 +124,8 @@ function targetFor(workspace: string) {
 function isDenied(error: unknown): boolean {
 	return (
 		isSandboxError(error, SandboxPermissionDeniedError) ||
-		isSandboxError(error, SandboxPathNotFoundError)
+		(process.platform === 'linux' &&
+			isSandboxError(error, SandboxPathNotFoundError))
 	);
 }
 
@@ -182,9 +184,13 @@ const suite: SandboxProviderFixtureOptions<MxcConfig> = {
 		);
 		const root = await realpath(temporary);
 		const workspace = path.join(root, 'workspace');
-		const outside = path.join(root, 'outside');
+
+		// Bubblewrap creates the workspace's parent in its private /tmp.
+		// Keep the host-only file in a separate directory.
+		const outside = path.join(root, 'host-only', 'outside');
 
 		await mkdir(workspace);
+		await mkdir(path.dirname(outside));
 		await writeFile(outside, 'host-only');
 
 		const resources = new Set<string>();
@@ -328,23 +334,33 @@ const suite: SandboxProviderFixtureOptions<MxcConfig> = {
 			},
 			async verifyPolicy(backend, context) {
 				const alias = path.join(backend.workspace.root, 'outside-alias');
+				const writer = backend.files?.write;
 
+				assert.isDefined(writer);
 				await symlink(outside, alias);
-				await expect(
-					backend.files?.write?.writeFile(
-						alias,
-						Buffer.from('changed'),
-						context
-					)
-				).rejects.toSatisfy(isDenied);
+
+				const [write] = await Promise.allSettled([
+					writer.writeFile(alias, Buffer.from('changed'), context)
+				]);
+
+				expect({
+					hostFile: await readFile(outside, 'utf8'),
+					linkTarget: await readlink(alias),
+					write:
+						write.status === 'rejected' && isDenied(write.reason)
+							? 'denied'
+							: write.status
+				}).toStrictEqual({
+					hostFile: 'host-only',
+					linkTarget: outside,
+					write: 'denied'
+				});
 
 				if (policy.hostUserData === 'denied') {
 					await expect(
 						backend.files?.read?.readFile(alias, context)
 					).rejects.toSatisfy(isDenied);
 				}
-
-				expect(await readFile(outside, 'utf8')).toBe('host-only');
 
 				const output: Uint8Array[] = [];
 				const result = await backend.exec(
