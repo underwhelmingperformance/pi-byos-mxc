@@ -1,6 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
 import { spawn } from 'node:child_process';
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import {
@@ -14,7 +13,6 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { promisify } from 'node:util';
 
 import type { SandboxOpenContext } from 'pi-bring-your-own-sandbox/provider';
 import { defaultProtectedWorkspacePaths } from 'pi-bring-your-own-sandbox/provider';
@@ -24,13 +22,12 @@ import { MxcBackend } from './backend.js';
 import { validateConfig } from './config.js';
 import { cleanupControl } from './fixtures/cleanup.js';
 import { nodeCommand } from './fixtures/native-sandbox.js';
+import { readProcessTable } from './fixtures/process-table.js';
 import { fixtureProfile } from './fixtures/profiles.js';
 import { compareText } from './paths.js';
 import { prepareRuntime } from './runtime.js';
 import type { JobAllocation } from './supervisor/client.js';
 import { SupervisorJob } from './supervisor/client.js';
-
-const execute = promisify(execFile);
 
 async function groupMembers(
 	jobs: ReadonlyMap<string, JobAllocation>
@@ -41,12 +38,9 @@ async function groupMembers(
 			.map((job) => job.targetPid)
 			.filter((id) => id !== undefined)
 	);
-	const snapshot = await execute('/bin/ps', ['-axo', 'pid=,pgid=,stat='], {
-		timeout: 1000,
-		maxBuffer: 2_097_152
-	});
+	const snapshot = await readProcessTable();
 
-	return snapshot.stdout
+	return snapshot
 		.trim()
 		.split('\n')
 		.filter((line) => {

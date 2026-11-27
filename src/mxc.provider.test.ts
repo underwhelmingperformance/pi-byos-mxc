@@ -1,4 +1,3 @@
-import { execFile } from 'node:child_process';
 import {
 	access,
 	mkdir,
@@ -13,7 +12,6 @@ import {
 } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 
 import type {
 	ProcessRequest,
@@ -37,6 +35,7 @@ import {
 	startDescendant,
 	verifyDescendantStopped
 } from './fixtures/descendant-lock.js';
+import { readProcessTable } from './fixtures/process-table.js';
 import { defaultPolicy } from './fixtures/profiles.js';
 import type { Host } from './host.js';
 import { systemHost } from './host.js';
@@ -49,7 +48,6 @@ const provider = createProvider();
 const allocations = new Map<string, Set<string>>();
 const jobs = new Map<string, Map<string, JobAllocation>>();
 const targets = new Map<string, { root: string; home: string }>();
-const execute = promisify(execFile);
 
 async function observedOpen(
 	host: Host,
@@ -142,11 +140,8 @@ async function verifyOwnedProcesses(workspace: string): Promise<void> {
 			.map((job) => job.targetPid)
 			.filter((id) => id !== undefined)
 	);
-	const snapshot = await execute('/bin/ps', ['-axo', 'pid=,pgid=,stat='], {
-		timeout: 1000,
-		maxBuffer: 2_097_152
-	});
-	const alive = snapshot.stdout
+	const snapshot = await readProcessTable();
+	const alive = snapshot
 		.trim()
 		.split('\n')
 		.map((line) => line.trim().split(/\s+/u))
