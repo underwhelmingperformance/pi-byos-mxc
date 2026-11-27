@@ -260,6 +260,134 @@ it('maps exact read and write grants under the private home', async () => {
 	});
 });
 
+it.runIf(process.platform === 'darwin').each([false, true])(
+	'excludes existing and late credential descendants from a directory grant with network %s',
+	async (network) => {
+		await withFixtureHome(async ({ home, request, context, open }) => {
+			const directory = path.join(home, '.config');
+			const ordinary = path.join(directory, 'ordinary');
+			const existing = path.join(directory, 'gh', 'marker');
+			const late = path.join(directory, 'gcloud', 'marker');
+
+			await mkdir(path.dirname(existing), { recursive: true });
+			await writeFile(ordinary, 'ordinary');
+			await writeFile(existing, 'excluded');
+
+			const backend = await open({
+				...request,
+				profile: fixtureProfile({ network }),
+				paths: { read: [directory] }
+			});
+
+			await mkdir(path.dirname(late));
+			await writeFile(late, 'excluded');
+
+			await expect(
+				run(
+					backend,
+					`cat ${quote(ordinary)} && [ ! -r ${quote(existing)} ] && [ ! -r ${quote(late)} ]`,
+					context
+				)
+			).resolves.toStrictEqual({
+				result: { kind: 'exited', exit: { kind: 'code', code: 0 } },
+				stdout: 'ordinary'
+			});
+		});
+	}
+);
+
+it('grants a narrow directory without exposing credential siblings', async () => {
+	await withFixtureHome(async ({ home, request, context, open }) => {
+		const directory = path.join(home, '.config', 'ordinary');
+		const ordinary = path.join(directory, 'marker');
+		const excluded = path.join(home, '.config', 'gh', 'marker');
+
+		await mkdir(directory, { recursive: true });
+		await mkdir(path.dirname(excluded));
+		await writeFile(ordinary, 'ordinary');
+		await writeFile(excluded, 'excluded');
+
+		const backend = await open({
+			...request,
+			profile: fixtureProfile({ network: true }),
+			paths: { read: [directory] }
+		});
+
+		await expect(
+			run(
+				backend,
+				`cat ${quote(ordinary)} && [ ! -r ${quote(excluded)} ]`,
+				context
+			)
+		).resolves.toStrictEqual({
+			result: { kind: 'exited', exit: { kind: 'code', code: 0 } },
+			stdout: 'ordinary'
+		});
+	});
+});
+
+it.runIf(process.platform === 'linux').each(['read', 'write'] as const)(
+	'refuses a Bubblewrap %s directory grant that encloses absent credential locations',
+	async (kind) => {
+		await withFixtureHome(async ({ home, request, open }) => {
+			const directory = path.join(home, '.config');
+
+			await mkdir(directory);
+
+			await expect(
+				open({
+					...request,
+					profile: fixtureProfile({ network: true }),
+					paths: { [kind]: [directory] }
+				})
+			).rejects.toStrictEqual(
+				new UnsupportedSandboxPolicyError({
+					operation: 'open',
+					providerId: 'mxc',
+					detail: {
+						kind: 'path',
+						path: directory,
+						access: kind,
+						reason: 'unreachable'
+					}
+				})
+			);
+		});
+	}
+);
+
+it.runIf(process.platform === 'darwin')(
+	'refuses a generated Seatbelt grant that conflicts with a directory exclusion',
+	async () => {
+		await withFixtureHome(async ({ home, request, open }) => {
+			const directory = path.join(home, '.config');
+			const credential = path.join(directory, 'gh', 'marker');
+
+			await mkdir(path.dirname(credential), { recursive: true });
+			await writeFile(credential, 'excluded');
+
+			await expect(
+				open({
+					...request,
+					profile: fixtureProfile({ network: true }),
+					paths: { read: [directory, credential] }
+				})
+			).rejects.toStrictEqual(
+				new UnsupportedSandboxPolicyError({
+					operation: 'open',
+					providerId: 'mxc',
+					detail: {
+						kind: 'path',
+						path: credential,
+						access: 'read',
+						reason: 'unreachable'
+					}
+				})
+			);
+		});
+	}
+);
+
 it.runIf(process.platform === 'darwin').each([
 	{ network: false, hostUserData: 'read-only' },
 	{ network: true, hostUserData: 'denied' }

@@ -324,8 +324,7 @@ export class MxcBackend implements SandboxBackend {
 				hostHome,
 				targetHome: store.scratch,
 				credentials,
-				hasGeneratedCredentialDenies:
-					hasHostReads && runtime.backend === 'seatbelt' && policy.network,
+				backend: runtime.backend,
 				protectedWrites: [
 					store.root,
 					...runtime.protectedPaths,
@@ -346,10 +345,7 @@ export class MxcBackend implements SandboxBackend {
 				store,
 				dependencies,
 				relationship,
-				grants,
-				hasHostReads || networkMode(runtime.backend, policy) === 'denied'
-					? credentials
-					: []
+				grants
 			);
 			const probeContext: BackendProcessContext = {
 				...context,
@@ -480,8 +476,7 @@ export class MxcBackend implements SandboxBackend {
 		store: RecoveryStore,
 		dependencies: BackendDependencies,
 		relationship: 'shared' | 'copied',
-		grants: Awaited<ReturnType<typeof planPathGrants>>,
-		deniedPaths: readonly string[]
+		grants: Awaited<ReturnType<typeof planPathGrants>>
 	) {
 		this.#host = dependencies.host;
 		this.#createJob = dependencies.createJob;
@@ -566,7 +561,7 @@ export class MxcBackend implements SandboxBackend {
 						]
 					: [runtime.workspace])
 			],
-			deniedPaths: [...deniedPaths],
+			deniedPaths: [...grants.credentialDenies],
 			...(this.#network === 'denied' && {
 				credentialGrants: grants.credentialGrants
 			})

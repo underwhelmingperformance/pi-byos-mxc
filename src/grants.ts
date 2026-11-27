@@ -115,6 +115,7 @@ interface GrantPlan {
 	readonly mappings: readonly GrantedPath[];
 	readonly extraReads: readonly string[];
 	readonly extraWrites: readonly string[];
+	readonly credentialDenies: readonly string[];
 	readonly credentialGrants: { read: string[]; write: string[] };
 }
 
@@ -128,7 +129,7 @@ export async function planPathGrants(
 		hostHome,
 		targetHome,
 		credentials,
-		hasGeneratedCredentialDenies,
+		backend,
 		protectedWrites,
 		policy
 	}: {
@@ -137,7 +138,7 @@ export async function planPathGrants(
 		readonly hostHome: string;
 		readonly targetHome: string;
 		readonly credentials: readonly string[];
-		readonly hasGeneratedCredentialDenies: boolean;
+		readonly backend: 'seatbelt' | 'bubblewrap';
 		readonly protectedWrites: readonly string[];
 		readonly policy: SandboxPolicy;
 	}
@@ -155,6 +156,17 @@ export async function planPathGrants(
 			(request.paths?.[kind] ?? []).map((hostPath) => ({ kind, hostPath }))
 		)
 		.toSorted((left, right) => left.hostPath.length - right.hostPath.length);
+	const enclosedCredentials = credentials.filter((credential) =>
+		entries.some(
+			({ hostPath }) =>
+				hostPath !== credential && isPathWithin(hostPath, credential)
+		)
+	);
+	const hasHostReads = policy.hostUserData === 'read-only';
+	const credentialDenies =
+		hasHostReads || (backend === 'seatbelt' && !policy.network)
+			? credentials
+			: enclosedCredentials;
 
 	for (const { kind, hostPath } of entries) {
 		const refusal = () =>
@@ -169,8 +181,25 @@ export async function planPathGrants(
 				}
 			});
 
+		if (
+			backend === 'bubblewrap' &&
+			enclosedCredentials.some((entry) => isPathWithin(hostPath, entry))
+		) {
+			context.reportDiagnostic({
+				level: 'warning',
+				message:
+					'Bubblewrap cannot protect absent credential paths inside this directory grant.'
+			});
+
+			throw refusal();
+		}
+
 		if (credentials.some((entry) => isPathWithin(entry, hostPath))) {
-			if (hasGeneratedCredentialDenies) {
+			if (
+				backend === 'seatbelt' &&
+				policy.network &&
+				credentialDenies.some((entry) => isPathWithin(entry, hostPath))
+			) {
 				context.reportDiagnostic({
 					level: 'warning',
 					message:
@@ -238,6 +267,7 @@ export async function planPathGrants(
 			extras.write.every((entry) => !isPathWithin(entry, filename))
 		),
 		extraWrites: extras.write,
+		credentialDenies,
 		credentialGrants
 	};
 }
