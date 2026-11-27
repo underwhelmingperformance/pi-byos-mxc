@@ -14,7 +14,7 @@ export default function mxc(
 	registerSandboxProviderFactory<MxcConfig, MxcSettings>(
 		pi,
 		extensionSource,
-		providerDeclaration,
+		providerDeclaration(),
 		createProvider,
 		{
 			configure: (_context, sharedSettingsSchema) =>

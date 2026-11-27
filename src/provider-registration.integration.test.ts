@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { createSandboxClient } from 'pi-bring-your-own-sandbox/consumer';
@@ -14,6 +14,7 @@ import {
 import { expect, it, vi } from 'vitest';
 
 import type { MxcConfig, MxcSettings } from './config.js';
+import mxc from './extension.js';
 import { CommandChecks } from './fixtures/command-checks.js';
 import { withPiRuntime } from './fixtures/pi-runtime.js';
 import { defaultHostUserData, defaultPolicy } from './fixtures/profiles.js';
@@ -33,6 +34,84 @@ const valid = {
 	protectPaths: ['.husky'],
 	environment: { LANG: 'C.UTF-8' }
 };
+
+it('fails closed when the session loads MXC on an unsupported platform', async () => {
+	const checks = new CommandChecks();
+	const failure = {
+		name: 'InvalidSandboxConfigError',
+		cause: {
+			cause: {
+				name: 'UnsupportedBackendError',
+				message:
+					'MXC cannot use the auto backend on freebsd. It requires Seatbelt on macOS or Bubblewrap on Linux.'
+			}
+		}
+	};
+	const marker = 'host-command-marker';
+
+	await withPiRuntime(
+		[
+			{
+				name: 'unsupported-platform',
+				factory(pi) {
+					Object.defineProperty(process, 'platform', { value: 'freebsd' });
+
+					try {
+						mxc(pi, import.meta.filename);
+					} finally {
+						Object.defineProperty(process, 'platform', {
+							value: systemHost.environment.platform
+						});
+					}
+				}
+			},
+			{
+				name: 'consumer',
+				factory(pi) {
+					initialiseSandboxHost(pi, import.meta.filename, {});
+
+					const client = createSandboxClient(pi, import.meta.filename);
+
+					pi.registerCommand('verify-unsupported', {
+						description: 'Verify failure on an unsupported platform.',
+						handler: (_arguments, context) =>
+							checks.run(async () => {
+								const negotiated = await client.negotiate(context);
+								const [opening] = await Promise.allSettled([
+									client.get(context)
+								]);
+
+								if (opening.status === 'fulfilled') {
+									await opening.value.exec({
+										kind: 'shell',
+										dialect: 'sh',
+										command: `printf ran > ${marker}`
+									});
+								}
+
+								expect(negotiated).toMatchObject({ ok: false, error: failure });
+								expect(opening).toMatchObject({
+									status: 'rejected',
+									reason: failure
+								});
+								await expect(
+									readFile(path.join(context.cwd, marker), 'utf8')
+								).resolves.toBe('untouched');
+							})
+					});
+				}
+			}
+		],
+		async (runtime) => {
+			await runtime.session.prompt('/verify-unsupported');
+			checks.verify(1);
+		},
+		{
+			prepare: (workspace) =>
+				writeFile(path.join(workspace, marker), 'untouched')
+		}
+	);
+});
 
 interface SettingsCase {
 	readonly label: string;

@@ -95,3 +95,10 @@ it.each([
 		expect(profilesFor(platform)).toStrictEqual(profiles);
 	}
 );
+
+it.each(['freebsd', 'win32'] as const)(
+	'declares no usable profile on %s',
+	(platform) => {
+		expect(profilesFor(platform)).toStrictEqual({ open: [], copy: [] });
+	}
+);

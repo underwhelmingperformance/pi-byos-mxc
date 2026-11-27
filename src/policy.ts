@@ -23,6 +23,10 @@ export function profilesFor(platform: NodeJS.Platform): {
 	readonly open: readonly Profile[];
 	readonly copy: readonly Profile[];
 } {
+	if (platform !== 'darwin' && platform !== 'linux') {
+		return { open: [], copy: [] };
+	}
+
 	const backend = platform === 'darwin' ? 'seatbelt' : 'bubblewrap';
 	const canCopy = platform === 'darwin';
 	const userData =
