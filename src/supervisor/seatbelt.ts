@@ -1,4 +1,11 @@
+import { hostSystemRoots } from 'pi-bring-your-own-sandbox/provider';
+
 import { isPathWithin } from '../paths.js';
+import {
+	DARWIN_CRYPTEX_DYLD,
+	DARWIN_DATA_VOLUME,
+	DARWIN_SYSTEM_VOLUMES
+} from '../platform/seatbelt-paths.js';
 
 import type { StartMessage } from './protocol.js';
 
@@ -33,21 +40,17 @@ function deniedPath(
 }
 
 export function offlineProfile(request: StartMessage): string {
+	const hasHostReads = request.readonlyPaths.includes('/');
+	const grantedReads = [...request.readonlyPaths, ...request.readwritePaths];
+	const systemReads = hostSystemRoots.darwin.map((root) =>
+		root === '/System' && !hasHostReads
+			? `(require-all ${subtree(root)} (require-not ${subtree(DARWIN_SYSTEM_VOLUMES)}))`
+			: subtree(root)
+	);
 	const read = [
-		...request.readonlyPaths,
-		...request.readwritePaths,
-		'/bin',
-		'/sbin',
-		'/usr/bin',
-		'/usr/sbin',
-		'/usr/lib',
-		'/usr/libexec',
-		'/usr/share',
-		'/private/etc',
-		'/System/Library',
-		'/System/Volumes/Preboot/Cryptexes/OS/System/Library',
-		'/Applications/Xcode.app/Contents/Developer/usr',
-		'/Library/Developer/CommandLineTools'
+		...grantedReads.map((filename) => subtree(filename)),
+		...systemReads,
+		subtree(DARWIN_CRYPTEX_DYLD)
 	];
 
 	return [
@@ -59,13 +62,23 @@ export function offlineProfile(request: StartMessage): string {
 		'(allow file-read* (literal "/") (literal "/private/var/select/sh") (literal "/dev/urandom") (literal "/dev/random"))',
 		'(allow file-read* file-write-data (literal "/dev/null"))',
 		'(allow file-write* (regex #"^/dev/fd/[0-9]+$"))',
-		`(allow file-read* file-map-executable ${read.map((filename) => subtree(filename)).join(' ')})`,
+		`(allow file-read* file-map-executable ${read.join(' ')})`,
 		...request.readwritePaths.map((p) => `(allow file-write* ${subtree(p)})`),
 		...request.readonlyPaths
 			.filter((p) =>
 				request.readwritePaths.some((root) => isPathWithin(root, p))
 			)
 			.map((p) => `(deny file-write* ${subtree(p)})`),
+		...(hasHostReads
+			? []
+			: [
+					...deniedPath('file-read*', DARWIN_DATA_VOLUME, grantedReads),
+					...deniedPath(
+						'file-write*',
+						DARWIN_DATA_VOLUME,
+						request.readwritePaths
+					)
+				]),
 		...request.deniedPaths.flatMap((filename) => [
 			...deniedPath(
 				'file-read*',

@@ -53,6 +53,57 @@ it('reads system files but cannot discover or read a private home entry', async 
 	}
 });
 
+it.runIf(process.platform === 'darwin').each([false, true])(
+	'denies the host home through its macOS Data volume alias with network %s',
+	async (network) => {
+		const home = await realpath(homedir());
+		const directory = await mkdtemp(path.join(home, '.mxc-test-'));
+		const file = path.join(directory, 'marker');
+		const alias = path.join('/System/Volumes/Data', file);
+
+		try {
+			await writeFile(file, 'private fixture');
+			await expect(readFile(alias, 'utf8')).resolves.toBe('private fixture');
+
+			await withNativeSandbox(
+				{},
+				async (sandbox) => {
+					const result = await sandbox.exec({
+						kind: 'shell',
+						dialect: 'sh',
+						command: `[ ! -r ${quote(alias)} ] && [ -r /System/Library/CoreServices/SystemVersion.plist ]`
+					});
+
+					expect(result.exit).toStrictEqual({ kind: 'code', code: 0 });
+				},
+				{ policy: fixtureProfile({ network }).policy }
+			);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	}
+);
+
+it.runIf(process.platform === 'darwin')(
+	'denies mixed Library trees in the generated Seatbelt profile',
+	async () => {
+		await withNativeSandbox(
+			{},
+			async (sandbox) => {
+				const result = await sandbox.exec({
+					kind: 'shell',
+					dialect: 'sh',
+					command:
+						'[ -r /System/Library/CoreServices/SystemVersion.plist ] && ! ls -A /Library/Preferences >/dev/null 2>&1'
+				});
+
+				expect(result.exit).toStrictEqual({ kind: 'code', code: 0 });
+			},
+			{ policy: fixtureProfile({ network: true }).policy }
+		);
+	}
+);
+
 async function withFixtureHome(
 	check: (fixture: {
 		home: string;

@@ -346,6 +346,37 @@ open-egress profiles with read-only host user data reject credential grants
 because the generated Seatbelt rules cannot make an exception for one path
 inside a protected directory.
 
+### Host system files
+
+The native macOS offline profile uses the SDK's [host system
+roots][system-roots]. When host user data is denied, the system rule excludes
+`/System/Volumes`. Seatbelt also denies the Data volume alias, which can point
+to the same files as `/Users`. Approved path grants still apply to the requested
+files.
+
+The native launcher grants a few runtime paths outside those roots.
+
+- The root directory `/` is readable for loader path resolution.
+- `/private/var/select/sh` lets Apple's `/bin/sh` dispatcher choose a shell.
+- `/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld` contains the shared
+  cache that dyld maps when starting system executables.
+- `/dev/null`, `/dev/random` and `/dev/urandom` provide the null device and
+  entropy. Numbered paths under `/dev/fd` support shell redirection.
+
+Generated Seatbelt profiles that deny host user data exclude other entries under
+`/Library` and `/System/Volumes` when the sandbox opens. They preserve SDK
+system roots, the dyld cache and explicitly granted paths. The generated
+launcher also reads `/private/var/db/dyld` for shared caches,
+`/private/var/db/timezone` for timezone data and `/private/var/select` for
+system tool dispatch.
+
+The generated Linux profile omitted the host's `/usr/include` directory on the
+Debian conformance machine. The Linux offline profile restores existing SDK
+system roots inside its runtime masks as read-only mounts.
+
+[system-roots]:
+  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/cf95c9834408453487fbcbd2a353a92dbbe1fe39/packages/sdk/src/host-system-roots.ts
+
 On Linux, the adapter grants read-only access to the canonical
 `/etc/resolv.conf` target when that file lists a routable nameserver, including
 when the file is outside MXC's baseline mounts. When every nameserver is a

@@ -1,9 +1,11 @@
 import { BlockList, isIPv4, isIPv6 } from 'node:net';
 import path from 'node:path';
 
+import { hostSystemRoots } from 'pi-bring-your-own-sandbox/provider';
+
 import { ResolverNotFileError } from '../errors.js';
 import type { HostFileSystem } from '../host.js';
-import { compareText } from '../paths.js';
+import { compareText, isPathWithin } from '../paths.js';
 
 const loopback = new BlockList();
 
@@ -72,7 +74,7 @@ export async function systemReadonlyPaths(
 	}
 }
 
-export async function linuxRuntimeMasks(fs: HostFileSystem): Promise<string[]> {
+async function linuxRuntimeMasks(fs: HostFileSystem): Promise<string[]> {
 	try {
 		const alias = await fs.realpath('/var/run');
 
@@ -84,6 +86,41 @@ export async function linuxRuntimeMasks(fs: HostFileSystem): Promise<string[]> {
 
 		throw error;
 	}
+}
+
+async function presentSystemRoot(
+	fs: HostFileSystem,
+	filename: string
+): Promise<string | undefined> {
+	try {
+		const metadata = await fs.stat(filename);
+
+		return metadata.isDirectory() ? filename : undefined;
+	} catch (error) {
+		if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+			return;
+		}
+
+		throw error;
+	}
+}
+
+export async function linuxRuntimeMounts(
+	fs: HostFileSystem,
+	systemRoots = hostSystemRoots.linux
+) {
+	const deniedPaths = await linuxRuntimeMasks(fs);
+	const coveredRoots = systemRoots.filter((root) =>
+		deniedPaths.some((mask) => mask !== root && isPathWithin(mask, root))
+	);
+	const restored = await Promise.all(
+		coveredRoots.map((root) => presentSystemRoot(fs, root))
+	);
+
+	return {
+		deniedPaths,
+		readonlyPaths: restored.filter((root) => root !== undefined)
+	};
 }
 
 // MXC 1.0.1 read-only binds these directories into every Bubblewrap sandbox so
