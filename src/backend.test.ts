@@ -570,6 +570,8 @@ it('rejects a missing working directory before starting a job', async () => {
 it.each([
 	{
 		hostWorkspaceWrites: true,
+		network: false,
+		files: {},
 		grants: {
 			readwritePaths: [scratch, '/workspace'],
 			readonlyPaths: ['/bin/sh', ...presetPaths]
@@ -577,15 +579,31 @@ it.each([
 	},
 	{
 		hostWorkspaceWrites: false,
+		network: false,
+		files: {},
 		grants: {
 			readwritePaths: [scratch],
 			readonlyPaths: ['/bin/sh', '/workspace']
 		}
+	},
+	{
+		hostWorkspaceWrites: true,
+		network: true,
+		files: { '/nix/store': {}, '/nix/var/nix/profiles': {} },
+		grants: {
+			readwritePaths: [scratch, '/workspace', '/dev/fd'],
+			readonlyPaths: [
+				'/bin/sh',
+				'/nix/store',
+				'/nix/var/nix/profiles',
+				...presetPaths
+			]
+		}
 	}
 ] as const)(
-	'grants the workspace for $hostWorkspaceWrites access',
-	async ({ hostWorkspaceWrites, grants }) => {
-		const policy = { ...defaultPolicy, hostWorkspaceWrites };
+	'grants the workspace with writes $hostWorkspaceWrites and network $network',
+	async ({ hostWorkspaceWrites, network, files, grants }) => {
+		const policy = { ...defaultPolicy, hostWorkspaceWrites, network };
 		const requests: JobOptions['request'][] = [];
 		const { backend, context } = await openBackend(
 			{
@@ -595,7 +613,7 @@ it.each([
 					return Promise.resolve(exited);
 				}
 			},
-			{ policy }
+			{ policy, files }
 		);
 
 		await backend.exec(

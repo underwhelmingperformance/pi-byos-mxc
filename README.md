@@ -371,9 +371,10 @@ system roots and explicitly granted paths. The generated launcher also reads
 `/private/var/db/dyld` for shared caches, `/private/var/db/timezone` for
 timezone data and `/private/var/select` for system tool dispatch.
 
-The generated Linux profile omitted the host's `/usr/include` directory on the
-Debian conformance machine. The Linux offline profile restores existing SDK
-system roots inside its runtime masks as read-only mounts.
+Generated profiles that deny host user data grant existing SDK system roots that
+MXC's baseline omits. These include `/usr/include` on the Debian conformance
+machine. The Linux offline profile also restores SDK system roots inside its
+runtime masks as read-only mounts.
 
 [system-roots]:
   https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/f42f166c11a64886efde257f28151747ca049f5b/packages/sdk/src/host-system-roots.ts

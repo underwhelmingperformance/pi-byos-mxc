@@ -58,7 +58,7 @@ import {
 } from './placeholders.js';
 import { generatedSeatbeltDenials } from './platform/seatbelt-paths.js';
 import {
-	linuxRuntimeMounts,
+	generatedSystemMounts,
 	resolverSockets
 } from './platform/system-paths.js';
 import { networkMode, profilesFor } from './policy.js';
@@ -316,9 +316,21 @@ export class MxcBackend implements SandboxBackend {
 				]
 			});
 			const { fs, environment } = dependencies.host;
+			const systemPlatform =
+				runtime.backend === 'seatbelt' ? 'darwin' : 'linux';
+			const systemRoots =
+				policy.hostUserData === 'denied' &&
+				policy.hostSystemFiles === 'read-only'
+					? hostSystemRoots[systemPlatform]
+					: [];
 			const runtimeMounts =
-				runtime.backend === 'bubblewrap' && !policy.network
-					? await linuxRuntimeMounts(fs)
+				policy.network || runtime.backend === 'bubblewrap'
+					? await generatedSystemMounts(
+							fs,
+							systemPlatform,
+							policy.network,
+							systemRoots
+						)
 					: { deniedPaths: [], readonlyPaths: [] };
 			const networkMasks = runtimeMounts.deniedPaths;
 			const hostHome = await canonicalGrantPath(fs, environment.homeDirectory);

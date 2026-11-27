@@ -7,6 +7,24 @@ import { ResolverNotFileError } from '../errors.js';
 import type { HostFileSystem } from '../host.js';
 import { compareText, isPathWithin } from '../paths.js';
 
+type SystemPlatform = keyof typeof hostSystemRoots;
+
+const generatedCommonReads = [
+	'/bin',
+	'/sbin',
+	'/usr/bin',
+	'/usr/sbin',
+	'/usr/lib',
+	'/usr/libexec',
+	'/usr/share'
+];
+
+// MXC 1.0.1 provides these subtrees in its generated profiles.
+const generatedReads: Record<SystemPlatform, readonly string[]> = {
+	darwin: [...generatedCommonReads, '/System', '/Library', '/private/etc'],
+	linux: [...generatedCommonReads, '/lib', '/lib64', '/usr/lib64', '/etc']
+};
+
 export function isHostSystemPath(
 	platform: NodeJS.Platform,
 	filename: string
@@ -115,21 +133,29 @@ async function presentSystemRoot(
 	}
 }
 
-export async function linuxRuntimeMounts(
+export async function generatedSystemMounts(
 	fs: HostFileSystem,
-	systemRoots = hostSystemRoots.linux
+	platform: SystemPlatform,
+	hasNetwork: boolean,
+	systemRoots = hostSystemRoots[platform]
 ) {
-	const deniedPaths = await linuxRuntimeMasks(fs);
-	const coveredRoots = systemRoots.filter((root) =>
-		deniedPaths.some((mask) => mask !== root && isPathWithin(mask, root))
+	const deniedPaths =
+		platform === 'linux' && !hasNetwork ? await linuxRuntimeMasks(fs) : [];
+	const explicitRoots = systemRoots.filter(
+		(root) =>
+			deniedPaths.every((mask) => !isPathWithin(root, mask)) &&
+			(deniedPaths.some((mask) => isPathWithin(mask, root)) ||
+				generatedReads[platform].every(
+					(baseline) => !isPathWithin(baseline, root)
+				))
 	);
-	const restored = await Promise.all(
-		coveredRoots.map((root) => presentSystemRoot(fs, root))
+	const present = await Promise.all(
+		explicitRoots.map((root) => presentSystemRoot(fs, root))
 	);
 
 	return {
 		deniedPaths,
-		readonlyPaths: restored.filter((root) => root !== undefined)
+		readonlyPaths: present.filter((root) => root !== undefined)
 	};
 }
 

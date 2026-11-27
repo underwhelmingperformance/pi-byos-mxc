@@ -1,4 +1,6 @@
+import { execFile } from 'node:child_process';
 import { once } from 'node:events';
+import { existsSync } from 'node:fs';
 import {
 	mkdir,
 	mkdtemp,
@@ -10,6 +12,7 @@ import {
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import type {
 	SandboxBackend,
@@ -29,6 +32,10 @@ import { fixtureProfile } from './fixtures/profiles.js';
 import { systemHost } from './host.js';
 import { profilesFor } from './policy.js';
 import { quote } from './shell.js';
+
+const nixProfileExecutable = '/nix/var/nix/profiles/default/bin/nix';
+const linuxHeader = '/usr/include/features.h';
+const execute = promisify(execFile);
 
 it('reads system files but cannot discover or read a private home entry', async () => {
 	const directory = await mkdtemp(path.join(homedir(), '.mxc-test-'));
@@ -100,6 +107,74 @@ it.runIf(process.platform === 'darwin')(
 				expect(result.exit).toStrictEqual({ kind: 'code', code: 0 });
 			},
 			{ policy: fixtureProfile({ network: true }).policy }
+		);
+	}
+);
+
+it.runIf(process.platform === 'darwin' && existsSync(nixProfileExecutable))(
+	'reads and runs Nix through the store and profile in generated Seatbelt',
+	async () => {
+		const nixStoreExecutable = await realpath(nixProfileExecutable);
+		const { stdout: version } = await execute(nixProfileExecutable, [
+			'--version'
+		]);
+
+		await withNativeSandbox(
+			{ environment: { PATH: '/bin:/usr/bin' } },
+			async (sandbox) => {
+				const results = [];
+
+				for (const filename of [nixStoreExecutable, nixProfileExecutable]) {
+					const executable = quote(filename);
+					const result = await sandbox.exec({
+						kind: 'shell',
+						dialect: 'sh',
+						command: String.raw`/usr/bin/head -c 1 ${executable} >/dev/null; printf 'read=%s\n' "$?"; ${executable} --version`
+					});
+
+					results.push({
+						exit: result.exit,
+						stdout: Buffer.from(result.stdout).toString('utf8')
+					});
+				}
+
+				const expected = {
+					exit: { kind: 'code', code: 0 },
+					stdout: `read=0\n${version}`
+				};
+
+				expect(results).toStrictEqual([expected, expected]);
+			},
+			{ policy: fixtureProfile({ network: true }).policy }
+		);
+	}
+);
+
+it
+	.runIf(process.platform === 'linux' && existsSync(linuxHeader))
+	.each([false, true])(
+	'reads a Linux system header with network %s',
+	async (network) => {
+		const contents = await readFile(linuxHeader, 'utf8');
+
+		await withNativeSandbox(
+			{},
+			async (sandbox) => {
+				const result = await sandbox.exec({
+					kind: 'shell',
+					dialect: 'sh',
+					command: `cat ${linuxHeader}`
+				});
+
+				expect({
+					exit: result.exit,
+					stdout: Buffer.from(result.stdout).toString('utf8')
+				}).toStrictEqual({
+					exit: { kind: 'code', code: 0 },
+					stdout: contents
+				});
+			},
+			{ policy: fixtureProfile({ network }).policy }
 		);
 	}
 );

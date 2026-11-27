@@ -5,7 +5,7 @@ import { FileSystemError } from '../fixtures/errors.js';
 import { memoryHost } from '../fixtures/host.js';
 
 import {
-	linuxRuntimeMounts,
+	generatedSystemMounts,
 	resolverSockets,
 	systemReadonlyPaths
 } from './system-paths.js';
@@ -17,14 +17,17 @@ it('masks the shared runtime directory once when /var/run aliases /run', async (
 
 	memory.symlinkSync('/run', '/var/run');
 
-	await expect(linuxRuntimeMounts(host.fs)).resolves.toStrictEqual({
+	await expect(
+		generatedSystemMounts(host.fs, 'linux', false)
+	).resolves.toStrictEqual({
 		deniedPaths: ['/run'],
 		readonlyPaths: []
 	});
 });
 
-it('restores only present SDK system roots inside the runtime mask', async () => {
+it('retains present SDK system roots without rebinding the runtime mask', async () => {
 	const { host, memory } = memoryHost({
+		'/etc': {},
 		'/run/daemon': {},
 		'/nix/store/system': {},
 		'/var': {}
@@ -34,14 +37,16 @@ it('restores only present SDK system roots inside the runtime mask', async () =>
 	memory.symlinkSync('/nix/store/system', '/run/current-system');
 
 	await expect(
-		linuxRuntimeMounts(host.fs, [
+		generatedSystemMounts(host.fs, 'linux', false, [
+			'/etc',
 			'/nix/store',
+			'/run',
 			'/run/current-system',
 			'/run/absent'
 		])
 	).resolves.toStrictEqual({
 		deniedPaths: ['/run'],
-		readonlyPaths: ['/run/current-system']
+		readonlyPaths: ['/nix/store', '/run/current-system']
 	});
 });
 
