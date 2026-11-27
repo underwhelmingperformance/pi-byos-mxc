@@ -28,6 +28,9 @@ export interface ProtectionRequest {
 	readonly backend: 'seatbelt' | 'bubblewrap';
 	readonly workspaceAccess: 'read-only' | 'read-write';
 	readonly resources: readonly WorkspaceProtection[];
+	readonly inspectEntry?: (
+		filename: string
+	) => Promise<Awaited<ReturnType<Host['fs']['lstat']>> | undefined>;
 }
 
 export function defaultWorkspaceProtection(
@@ -128,17 +131,7 @@ class ProtectionPlan {
 	}
 
 	async #exists(filename: string): Promise<boolean> {
-		try {
-			await this.#host.fs.lstat(filename);
-
-			return true;
-		} catch (error) {
-			if (isMissing(error)) {
-				return false;
-			}
-
-			throw error;
-		}
+		return (await this.#metadata(filename)) !== undefined;
 	}
 
 	async #gitPaths(): Promise<string[]> {
@@ -270,6 +263,10 @@ class ProtectionPlan {
 	}
 
 	async #metadata(filename: string) {
+		if (this.#request.inspectEntry !== undefined) {
+			return this.#request.inspectEntry(filename);
+		}
+
 		try {
 			return await this.#host.fs.lstat(filename);
 		} catch (error) {

@@ -4,19 +4,19 @@ import type { HostFileSystem } from './host.js';
 interface Placeholder {
 	readonly dev: number;
 	readonly ino: number;
-	users: number;
+	readonly users: Set<symbol>;
 }
 
+type FileMetadata = Awaited<ReturnType<HostFileSystem['lstat']>>;
+
 /**
-Placeholders granted to one command. `paths` lists everything to grant
-read-only, and `created` lists the placeholders that this lease holds.
+Provider-owned placeholders leased by one command.
 */
 export interface PlaceholderLease {
-	readonly paths: readonly string[];
-	readonly created: readonly string[];
+	readonly owned: readonly string[];
 
 	/**
-	Removes placeholders that no other lease holds. Call this only after the
+	Removes placeholders without another active lease. Call this only after the
 	command's processes have stopped: unlinking a placeholder on the host
 	detaches its mount inside a running sandbox.
 	*/
@@ -25,6 +25,16 @@ export interface PlaceholderLease {
 
 function hasCode(error: unknown, code: string): boolean {
 	return error instanceof Error && 'code' in error && error.code === code;
+}
+
+export class PlaceholderCleanupError extends AggregateError {
+	override readonly name = 'PlaceholderCleanupError';
+	readonly residues: readonly Error[];
+
+	constructor(residues: readonly Error[]) {
+		super(residues, 'MXC could not remove all unused placeholders.');
+		this.residues = residues;
+	}
 }
 
 /**
@@ -36,39 +46,69 @@ the registry created.
 export class PlaceholderRegistry {
 	readonly #fs: HostFileSystem;
 	readonly #placeholders = new Map<string, Placeholder>();
+	readonly #pending = new Map<string, Promise<undefined>>();
 
 	constructor(fs: HostFileSystem) {
 		this.#fs = fs;
 	}
 
-	async #isCurrent(filename: string, placeholder: Placeholder) {
-		try {
-			const metadata = await this.#fs.lstat(filename);
+	async #atPath<T>(filename: string, operation: () => Promise<T>): Promise<T> {
+		const previous = this.#pending.get(filename);
+		const next = Promise.withResolvers<undefined>();
 
-			return (
-				metadata.isFile() &&
-				metadata.size === 0 &&
-				metadata.dev === placeholder.dev &&
-				metadata.ino === placeholder.ino
-			);
+		this.#pending.set(filename, next.promise);
+
+		try {
+			await previous;
+
+			return await operation();
+		} finally {
+			next.resolve(undefined);
+
+			if (this.#pending.get(filename) === next.promise) {
+				this.#pending.delete(filename);
+			}
+		}
+	}
+
+	async #metadata(filename: string) {
+		try {
+			return await this.#fs.lstat(filename);
 		} catch (error) {
 			if (hasCode(error, 'ENOENT')) {
-				return false;
+				return;
 			}
 
 			throw error;
 		}
 	}
 
-	// Returns whether this call holds the placeholder. A path that the host
-	// created after planning is granted as it is and never removed.
-	async #hold(filename: string): Promise<boolean> {
+	#isCurrent(
+		metadata: FileMetadata | undefined,
+		placeholder: Placeholder
+	): boolean {
+		return (
+			metadata !== undefined &&
+			metadata.isFile() &&
+			metadata.size === 0 &&
+			metadata.dev === placeholder.dev &&
+			metadata.ino === placeholder.ino
+		);
+	}
+
+	async #acquire(
+		filename: string,
+		user: symbol
+	): Promise<Placeholder | undefined> {
 		const existing = this.#placeholders.get(filename);
 
-		if (existing !== undefined && (await this.#isCurrent(filename, existing))) {
-			existing.users++;
+		if (
+			existing !== undefined &&
+			this.#isCurrent(await this.#metadata(filename), existing)
+		) {
+			existing.users.add(user);
 
-			return true;
+			return existing;
 		}
 
 		this.#placeholders.delete(filename);
@@ -86,72 +126,107 @@ export class PlaceholderRegistry {
 				throw new ProtectedSymbolicLinkError(filename);
 			}
 
-			return false;
+			return;
 		}
 
 		const metadata = await this.#fs.lstat(filename);
 
-		this.#placeholders.set(filename, {
+		const placeholder = {
 			dev: metadata.dev,
 			ino: metadata.ino,
-			users: 1
-		});
+			users: new Set([user])
+		};
 
-		return true;
+		this.#placeholders.set(filename, placeholder);
+
+		return placeholder;
 	}
 
-	async #release(filename: string): Promise<void> {
-		const placeholder = this.#placeholders.get(filename);
-
-		if (placeholder === undefined) {
+	async #release(filename: string, placeholder: Placeholder, user: symbol) {
+		if (this.#placeholders.get(filename) !== placeholder) {
 			return;
 		}
 
-		placeholder.users--;
+		placeholder.users.delete(user);
 
-		if (placeholder.users > 0) {
+		if (placeholder.users.size > 0) {
 			return;
+		}
+
+		if (this.#isCurrent(await this.#metadata(filename), placeholder)) {
+			await this.#fs.unlink(filename);
 		}
 
 		this.#placeholders.delete(filename);
+	}
 
-		if (await this.#isCurrent(filename, placeholder)) {
-			await this.#fs.unlink(filename);
-		}
+	inspect(filename: string): Promise<FileMetadata | undefined> {
+		return this.#atPath(filename, async () => {
+			const metadata = await this.#metadata(filename);
+			const owned = this.#placeholders.get(filename);
+
+			if (owned !== undefined && this.#isCurrent(metadata, owned)) {
+				return;
+			}
+
+			return metadata;
+		});
 	}
 
 	async acquire(filenames: readonly string[]): Promise<PlaceholderLease> {
-		const held: string[] = [];
-		const created: string[] = [];
-		const release = async () => {
-			const pending = held.splice(0);
+		const user = Symbol();
+		const leased = new Map<string, Placeholder>();
+		const unique = new Set(filenames);
 
-			for (const filename of pending) {
-				await this.#release(filename);
+		const release = async () => {
+			const results = await Promise.all(
+				[...leased].map(async ([filename, placeholder]) => {
+					try {
+						await this.#atPath(filename, () =>
+							this.#release(filename, placeholder, user)
+						);
+					} catch (error) {
+						return new Error(`Could not remove MXC placeholder ${filename}.`, {
+							cause: error
+						});
+					}
+
+					leased.delete(filename);
+
+					return;
+				})
+			);
+			const failures = results.filter((result) => result !== undefined);
+
+			if (failures.length > 0) {
+				throw new PlaceholderCleanupError(failures);
 			}
 		};
 
 		try {
-			for (const filename of filenames) {
-				const placeholder = this.#placeholders.get(filename);
-				const isHeld = await this.#hold(filename);
+			for (const filename of unique) {
+				const placeholder = await this.#atPath(filename, () =>
+					this.#acquire(filename, user)
+				);
 
-				if (!isHeld) {
-					continue;
-				}
-
-				held.push(filename);
-
-				if (placeholder === undefined) {
-					created.push(filename);
+				if (placeholder !== undefined) {
+					leased.set(filename, placeholder);
 				}
 			}
 		} catch (error) {
-			await release();
+			try {
+				await release();
+			} catch (cleanupError) {
+				throw new AggregateError(
+					[error, cleanupError],
+					'MXC could not acquire or clean up its placeholder lease.',
+					{ cause: cleanupError }
+				);
+			}
 
 			throw error;
 		}
 
-		return { paths: [...filenames], created, release };
+		return { owned: leased.keys().toArray(), release };
 	}
 }

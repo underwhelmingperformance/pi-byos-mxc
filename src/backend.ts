@@ -20,6 +20,7 @@ import type {
 	SandboxWorkspace
 } from 'pi-bring-your-own-sandbox/provider';
 import {
+	cleanDisplayText,
 	InvalidSandboxRequestError,
 	isSandboxError,
 	mapSandboxErrno,
@@ -50,7 +51,10 @@ import type { Host, HostFileSystem } from './host.js';
 import { systemHost } from './host.js';
 import { assertDisjointPaths, compareText } from './paths.js';
 import type { PlaceholderLease } from './placeholders.js';
-import { PlaceholderRegistry } from './placeholders.js';
+import {
+	PlaceholderCleanupError,
+	PlaceholderRegistry
+} from './placeholders.js';
 import { resolverSockets } from './platform/system-paths.js';
 import { networkMode, profilesFor } from './policy.js';
 import type { Protection } from './protection.js';
@@ -292,6 +296,10 @@ export class MxcBackend implements SandboxBackend {
 				workspace,
 				backend: runtime.backend,
 				workspaceAccess: isWritable ? 'read-write' : 'read-only',
+				...(runtime.backend === 'bubblewrap' && {
+					inspectEntry: (filename: string) =>
+						placeholderRegistry(dependencies.host).inspect(filename)
+				}),
 				resources: [
 					...defaultWorkspaceProtection(runtime.backend),
 					...request.configuration.protectPaths.map((entry) => ({
@@ -446,6 +454,10 @@ export class MxcBackend implements SandboxBackend {
 	readonly #lifetime = new AbortController();
 	readonly #jobs = new Set<Promise<BackendProcessOutcome>>();
 	readonly #runners = new Set<JobRunner>();
+	readonly #pendingReleases = new Map<
+		string,
+		{ readonly lease: PlaceholderLease; readonly isRecorded: boolean }
+	>();
 	#isClosing = false;
 	#disposalCleanup: SandboxCleanupContext | undefined;
 	#disposal: Promise<void> | undefined;
@@ -670,9 +682,17 @@ export class MxcBackend implements SandboxBackend {
 		);
 
 		try {
-			await this.#store.begin(id, lease.created);
+			await this.#store.begin(id, lease.owned);
 		} catch (error) {
-			await lease.release();
+			try {
+				await this.#finish(id, lease, context, false);
+			} catch (cleanupError) {
+				throw new AggregateError(
+					[error, cleanupError],
+					'MXC could not record the job or release its placeholders.',
+					{ cause: cleanupError }
+				);
+			}
 
 			throw error;
 		}
@@ -695,20 +715,46 @@ export class MxcBackend implements SandboxBackend {
 			record: (allocation) => this.#store.record(allocation)
 		});
 
-		return this.#runJob(id, job, lease);
+		return this.#runJob(id, job, lease, context);
 	}
 
 	// Removing a placeholder detaches its mount inside a running sandbox, so
 	// placeholders are released only when the target is known to have stopped.
-	async #finish(id: string, lease: PlaceholderLease): Promise<void> {
-		await lease.release();
-		await this.#store.confirmReleased(id);
+	async #finish(
+		id: string,
+		lease: PlaceholderLease,
+		context: SandboxOperationContext,
+		isRecorded = true
+	): Promise<void> {
+		this.#pendingReleases.set(id, { lease, isRecorded });
+
+		try {
+			await lease.release();
+		} catch (error) {
+			if (error instanceof PlaceholderCleanupError) {
+				for (const residue of error.residues) {
+					context.reportDiagnostic({
+						level: 'warning',
+						message: cleanDisplayText(residue.message).slice(0, 2048)
+					});
+				}
+			}
+
+			throw error;
+		}
+
+		if (isRecorded) {
+			await this.#store.confirmReleased(id);
+		}
+
+		this.#pendingReleases.delete(id);
 	}
 
 	async #runJob(
 		id: string,
 		job: JobRunner,
-		lease: PlaceholderLease
+		lease: PlaceholderLease,
+		context: SandboxOperationContext
 	): Promise<BackendProcessOutcome> {
 		this.#runners.add(job);
 
@@ -727,7 +773,7 @@ export class MxcBackend implements SandboxBackend {
 						error.completion === 'not-started')
 				) {
 					try {
-						await this.#finish(id, lease);
+						await this.#finish(id, lease, context);
 					} catch (cleanupError) {
 						throw new AggregateError(
 							[error, cleanupError],
@@ -740,7 +786,7 @@ export class MxcBackend implements SandboxBackend {
 				throw error;
 			}
 
-			await this.#finish(id, lease);
+			await this.#finish(id, lease, context);
 
 			return outcome;
 		} finally {
@@ -761,7 +807,26 @@ export class MxcBackend implements SandboxBackend {
 			}
 
 			await Promise.allSettled(this.#jobs);
+
+			const releases = await Promise.allSettled(
+				[...this.#pendingReleases].map(([id, { lease, isRecorded }]) =>
+					this.#finish(id, lease, context, isRecorded)
+				)
+			);
+
 			await this.#store.dispose();
+
+			const failures = releases
+				.filter((result) => result.status === 'rejected')
+				.map(({ reason }): unknown => reason);
+
+			if (failures.length > 0) {
+				throw new AggregateError(
+					failures,
+					'MXC could not release all placeholders during disposal.'
+				);
+			}
+
 			pending.resolve(undefined);
 		} catch (error) {
 			pending.reject(error);

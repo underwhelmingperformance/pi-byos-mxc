@@ -86,7 +86,7 @@ export class RecoveryStore {
 			id,
 			lease:
 				'No automatic expiry. Manual recovery is required after an unconfirmed cleanup or hard host crash.',
-			instructions: `Inspect provider job records in ${root}. Match each job ID to the supervisor command line and verify current process and group identities before any action. Records identify supervisors and direct targets, not every descendant. An unreported target may still be waiting at its job-ID stdin gate. Do not signal a PID solely because a record lists it. Remove only this directory after the recorded supervisors, supervised groups and provider-owned allocations have been released. Descendants outside those groups may still modify permitted workspace files; removing this directory does not revoke their access. A record's placeholders are empty files that protect absent workspace paths; remove each one only after its job's processes have stopped, and only if it is still empty.`
+			instructions: `Inspect provider job records in ${root}. Match each job ID to the supervisor command line and verify current process and group identities before any action. Records identify supervisors and direct targets, not every descendant. An unreported target may still be waiting at its job-ID stdin gate. Do not signal a PID solely because a record lists it. Remove only this directory after the recorded supervisors, supervised groups and provider-owned allocations have been released. Descendants outside those groups may still modify permitted workspace files; removing this directory does not revoke their access. A record's placeholders are empty files that protect absent workspace paths. Remove each one only after every job that lists it has stopped, and only if it is still empty.`
 		});
 	}
 
@@ -112,7 +112,7 @@ export class RecoveryStore {
 
 	/**
 	Records a job before its supervisor starts. `placeholders` lists the empty
-	files that the job created to protect absent workspace paths.
+	files that the job leases to protect absent workspace paths.
 	*/
 	async begin(id: string, placeholders: readonly string[] = []): Promise<void> {
 		if (this.#isClosing) {
