@@ -5,11 +5,6 @@ import { hostSystemRoots } from 'pi-bring-your-own-sandbox/provider';
 import type { HostFileSystem } from '../host.js';
 import { compareText, isPathWithin } from '../paths.js';
 
-export const DARWIN_SYSTEM_VOLUMES = '/System/Volumes';
-export const DARWIN_DATA_VOLUME = '/System/Volumes/Data';
-export const DARWIN_CRYPTEX_DYLD =
-	'/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld';
-
 async function deniedEntries(
 	fs: HostFileSystem,
 	filename: string,
@@ -48,12 +43,11 @@ export async function generatedSeatbeltDenials(
 	fs: HostFileSystem,
 	granted: readonly string[]
 ): Promise<string[]> {
-	const trees = ['/Library', DARWIN_SYSTEM_VOLUMES];
+	const trees = ['/Library', '/System/Volumes'];
 	const allowed = [
 		...hostSystemRoots.darwin.filter((root) =>
 			trees.some((tree) => isPathWithin(tree, root))
 		),
-		DARWIN_CRYPTEX_DYLD,
 		...granted
 	];
 	const denials = await Promise.all(

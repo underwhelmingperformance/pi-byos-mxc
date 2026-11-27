@@ -21,6 +21,7 @@ import type {
 } from 'pi-bring-your-own-sandbox/provider';
 import {
 	cleanDisplayText,
+	hostSystemRoots,
 	InvalidSandboxRequestError,
 	isSandboxError,
 	mapSandboxErrno,
@@ -670,6 +671,12 @@ export class MxcBackend implements SandboxBackend {
 			id,
 			backend: this.#runtime.backend,
 			network: this.#network,
+			hostUserData: this.profile.policy.hostUserData,
+			systemRoots: [
+				...hostSystemRoots[
+					this.#runtime.backend === 'seatbelt' ? 'darwin' : 'linux'
+				]
+			],
 			...(this.#grants.credentialGrants !== undefined && {
 				credentialGrants: this.#grants.credentialGrants
 			}),

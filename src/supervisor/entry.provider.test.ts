@@ -19,6 +19,8 @@ it('ends the supervisor after an invalid start message', async () => {
 			id: randomUUID(),
 			backend: 'seatbelt',
 			network: 'ip-denied',
+			hostUserData: 'denied',
+			systemRoots: [],
 			command: 'true',
 			shell: '/bin/sh',
 			cwd: 'relative',

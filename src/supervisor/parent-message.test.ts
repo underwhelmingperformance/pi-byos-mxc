@@ -10,6 +10,8 @@ const start = {
 	id,
 	backend: 'seatbelt',
 	network: 'ip-denied',
+	hostUserData: 'denied',
+	systemRoots: ['/bin', '/usr/bin'],
 	command: 'printf ok',
 	shell: '/bin/sh',
 	cwd: '/workspace',
@@ -22,6 +24,30 @@ const start = {
 const messages: readonly { readonly name: string; readonly value: unknown }[] =
 	[
 		{ name: 'start', value: start },
+		{
+			name: 'read-only host user data',
+			value: { ...start, hostUserData: 'read-only' }
+		},
+		{
+			name: 'read-write host user data',
+			value: { ...start, hostUserData: 'read-write' }
+		},
+		{
+			name: 'missing host user data',
+			value: { ...start, hostUserData: undefined }
+		},
+		{
+			name: 'unknown host user data',
+			value: { ...start, hostUserData: 'allowed' }
+		},
+		{
+			name: 'missing system roots',
+			value: { ...start, systemRoots: undefined }
+		},
+		{
+			name: 'relative system root',
+			value: { ...start, systemRoots: ['usr/bin'] }
+		},
 		{
 			name: 'credential grants',
 			value: {
@@ -90,6 +116,8 @@ it('accepts exactly the parent messages that the protocol schema accepts', () =>
 			.map(({ name }) => name)
 	).toStrictEqual([
 		'start',
+		'read-only host user data',
+		'read-write host user data',
 		'credential grants',
 		'release',
 		'cancel',

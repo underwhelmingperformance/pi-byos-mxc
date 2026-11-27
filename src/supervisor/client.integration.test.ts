@@ -53,6 +53,8 @@ function job(command: string, spawnSupervisor?: JobOptions['spawn']) {
 				id: randomUUID(),
 				backend: 'seatbelt',
 				network: 'ip-denied',
+				hostUserData: 'denied',
+				systemRoots: [],
 				command,
 				shell: '/bin/sh',
 				cwd: '/workspace',

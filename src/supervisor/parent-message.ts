@@ -37,6 +37,9 @@ function isStart(message: Record<string, unknown>): boolean {
 		(message.backend === 'seatbelt' || message.backend === 'bubblewrap') &&
 		isText(message.network) &&
 		['ip-denied', 'open-egress', 'denied'].includes(message.network) &&
+		isText(message.hostUserData) &&
+		['denied', 'read-only', 'read-write'].includes(message.hostUserData) &&
+		isPathList(message.systemRoots) &&
 		isText(message.command) &&
 		isAbsolutePath(message.shell) &&
 		isAbsolutePath(message.cwd) &&

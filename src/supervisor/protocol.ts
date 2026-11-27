@@ -22,6 +22,8 @@ const startSchema = Type.Object({
 	id,
 	backend: Type.Enum(['seatbelt', 'bubblewrap']),
 	network: Type.Enum(['ip-denied', 'open-egress', 'denied']),
+	hostUserData: Type.Enum(['denied', 'read-only', 'read-write']),
+	systemRoots: absolutePaths,
 	command: text,
 	shell: absolutePath,
 	cwd: absolutePath,

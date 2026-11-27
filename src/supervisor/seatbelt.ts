@@ -1,13 +1,8 @@
-import { hostSystemRoots } from 'pi-bring-your-own-sandbox/provider';
-
 import { isPathWithin } from '../paths.js';
-import {
-	DARWIN_CRYPTEX_DYLD,
-	DARWIN_DATA_VOLUME,
-	DARWIN_SYSTEM_VOLUMES
-} from '../platform/seatbelt-paths.js';
 
 import type { StartMessage } from './protocol.js';
+
+const DARWIN_DATA_VOLUME = '/System/Volumes/Data';
 
 function subtree(filename: string): string {
 	if (/[\p{Cc}]/u.test(filename)) {
@@ -40,18 +35,11 @@ function deniedPath(
 }
 
 export function offlineProfile(request: StartMessage): string {
-	const hasHostReads = request.readonlyPaths.includes('/');
+	const hasHostReads = request.hostUserData !== 'denied';
 	const grantedReads = [...request.readonlyPaths, ...request.readwritePaths];
-	const systemReads = hostSystemRoots.darwin.map((root) =>
-		root === '/System' && !hasHostReads
-			? `(require-all ${subtree(root)} (require-not ${subtree(DARWIN_SYSTEM_VOLUMES)}))`
-			: subtree(root)
+	const read = [...grantedReads, ...request.systemRoots].map((filename) =>
+		subtree(filename)
 	);
-	const read = [
-		...grantedReads.map((filename) => subtree(filename)),
-		...systemReads,
-		subtree(DARWIN_CRYPTEX_DYLD)
-	];
 
 	return [
 		'(version 1)',
