@@ -19,6 +19,18 @@ function isMissing(error: unknown): boolean {
 	return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
 
+async function inspectGrantPath(fs: HostFileSystem, filename: string) {
+	try {
+		return await fs.lstat(filename);
+	} catch (error) {
+		if (isMissing(error)) {
+			return;
+		}
+
+		throw error;
+	}
+}
+
 export async function canonicalGrantPath(
 	fs: HostFileSystem,
 	filename: string
@@ -29,14 +41,55 @@ export async function canonicalGrantPath(
 		if (!isMissing(error)) {
 			throw error;
 		}
+	}
 
-		const parent = path.dirname(filename);
+	const absolute = path.isAbsolute(filename)
+		? filename
+		: `${process.cwd()}${path.sep}${filename}`;
+	const root = path.parse(absolute).root;
+	const pending = absolute.slice(root.length).split(path.sep).toReversed();
+	let resolved = root;
+	let links = 0;
 
-		return path.join(
-			await canonicalGrantPath(fs, parent),
-			path.basename(filename)
+	for (
+		let component = pending.pop();
+		component !== undefined;
+		component = pending.pop()
+	) {
+		if (component === '' || component === '.') {
+			continue;
+		}
+
+		if (component === '..') {
+			resolved = path.dirname(resolved);
+			continue;
+		}
+
+		const next = path.join(resolved, component);
+		const metadata = await inspectGrantPath(fs, next);
+
+		if (metadata?.isSymbolicLink() !== true) {
+			resolved = next;
+			continue;
+		}
+
+		if (++links > 40) {
+			throw new RangeError('Too many symbolic links in the MXC grant path.');
+		}
+
+		const target = await fs.readlink(next);
+		const targetRoot = path.parse(target).root;
+
+		if (targetRoot !== '') {
+			resolved = targetRoot;
+		}
+
+		pending.push(
+			...target.slice(targetRoot.length).split(path.sep).toReversed()
 		);
 	}
+
+	return resolved;
 }
 
 export async function credentialPaths(
