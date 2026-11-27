@@ -382,14 +382,19 @@ On Linux, `policy.network: false` uses MXC's `ip-denied` mode. On both systems,
 traffic. Both generated modes request ingress and host-loopback IP denial.
 Ingress, expanded loopback coverage and IPv6 validation are incomplete.
 
+The Linux offline profile masks `/run` and any separate `/var/run` tree. This
+hides resolver sockets and their configuration files under those paths. The
+profile blocks DNS traffic and refuses grants to host directories and special
+files.
+
 The following Unix socket exceptions apply to the generated MXC profiles. A
 sandboxed command can connect to a host service's UNIX socket and ask it to make
 network connections on the command's behalf. With MXC's generated profiles,
 reachable sockets include:
 
-- sockets that a host process adds to the writable workspace after opening;
-- on Linux, sockets in read-only grants, because a read-only mount does not
-  prevent connecting to a socket;
+- sockets that a host process adds to the live workspace after opening;
+- on Linux with `open-egress`, sockets in directory grants, because a read-only
+  mount does not prevent connecting to a socket;
 - on macOS with `open-egress`, every socket on the host, including the
   ssh-agent, Nix daemon and launchd sockets.
 

@@ -761,14 +761,20 @@ it('keeps a placeholder and records it when the command outcome is unknown', asy
 });
 
 it.each([
-	{ backend: 'seatbelt', deniedPaths: [] },
+	{ backend: 'seatbelt', network: false, deniedPaths: [] },
 	{
 		backend: 'bubblewrap',
+		network: false,
+		deniedPaths: ['/run', '/var/run']
+	},
+	{
+		backend: 'bubblewrap',
+		network: true,
 		deniedPaths: ['/run/systemd/resolve/io.systemd.Resolve']
 	}
 ] as const)(
-	'denies host resolver sockets with $backend',
-	async ({ backend: native, deniedPaths }) => {
+	'masks host resolver paths with $backend and network $network',
+	async ({ backend: native, network, deniedPaths }) => {
 		const requests: JobOptions['request'][] = [];
 		const { backend, context } = await openBackend(
 			{
@@ -780,7 +786,11 @@ it.each([
 			},
 			{
 				backend: native,
-				files: { '/run/systemd/resolve/io.systemd.Resolve': '' },
+				policy: { ...defaultPolicy, network },
+				files: {
+					'/run/systemd/resolve/io.systemd.Resolve': '',
+					'/var/run': {}
+				},
 				sockets: ['/run/systemd/resolve/io.systemd.Resolve']
 			}
 		);

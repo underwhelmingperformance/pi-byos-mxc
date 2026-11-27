@@ -49,13 +49,13 @@ import {
 } from './grants.js';
 import type { Host, HostFileSystem } from './host.js';
 import { systemHost } from './host.js';
-import { assertDisjointPaths, compareText } from './paths.js';
+import { assertDisjointPaths, compareText, isPathWithin } from './paths.js';
 import type { PlaceholderLease } from './placeholders.js';
 import {
 	PlaceholderCleanupError,
 	PlaceholderRegistry
 } from './placeholders.js';
-import { resolverSockets } from './platform/system-paths.js';
+import { linuxRuntimeMasks, resolverSockets } from './platform/system-paths.js';
 import { networkMode, profilesFor } from './policy.js';
 import type { Protection } from './protection.js';
 import { defaultWorkspaceProtection, planProtection } from './protection.js';
@@ -126,8 +126,10 @@ function describePolicy(
 		...runtime.protection.placeholders
 	].toSorted(compareText);
 	const socketScope = [
-		'in the writable workspace',
-		...(isSeatbelt ? [] : ['in read-only grants']),
+		'in the live workspace when a host process adds a socket after opening',
+		...(!isSeatbelt && network === 'open-egress'
+			? ['in directory grants']
+			: []),
 		...(isSeatbelt && network === 'open-egress' ? ['anywhere on the host'] : [])
 	].join(' and ');
 	const filesystem =
@@ -309,6 +311,10 @@ export class MxcBackend implements SandboxBackend {
 				]
 			});
 			const { fs, environment } = dependencies.host;
+			const networkMasks =
+				runtime.backend === 'bubblewrap' && !policy.network
+					? await linuxRuntimeMasks(fs)
+					: [];
 			const hostHome = await canonicalGrantPath(fs, environment.homeDirectory);
 			const hasHostReads = policy.hostUserData === 'read-only';
 			const credentials =
@@ -340,6 +346,10 @@ export class MxcBackend implements SandboxBackend {
 					...runtime,
 					workspace,
 					protection,
+					networkMasks,
+					readonlyPaths: runtime.readonlyPaths.filter((filename) =>
+						networkMasks.every((mask) => !isPathWithin(mask, filename))
+					),
 					...(hasHostReads && { hostUserDataRoot: hostHome })
 				},
 				store,
@@ -471,6 +481,7 @@ export class MxcBackend implements SandboxBackend {
 		profile: Profile,
 		runtime: MxcRuntime & {
 			readonly protection: Protection;
+			readonly networkMasks: readonly string[];
 			readonly hostUserDataRoot?: string;
 		},
 		store: RecoveryStore,
@@ -561,7 +572,7 @@ export class MxcBackend implements SandboxBackend {
 						]
 					: [runtime.workspace])
 			],
-			deniedPaths: [...grants.credentialDenies],
+			deniedPaths: [...runtime.networkMasks, ...grants.credentialDenies],
 			...(this.#network === 'denied' && {
 				credentialGrants: grants.credentialGrants
 			})
@@ -658,10 +669,12 @@ export class MxcBackend implements SandboxBackend {
 			readonlyPaths: [...this.#grants.readonlyPaths],
 			deniedPaths: [
 				...this.#grants.deniedPaths,
-				...(await resolverSockets(
-					this.#host.environment.platform,
-					this.#host.fs
-				))
+				...(this.#network === 'ip-denied'
+					? []
+					: await resolverSockets(
+							this.#host.environment.platform,
+							this.#host.fs
+						))
 			]
 		};
 

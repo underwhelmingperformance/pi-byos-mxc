@@ -72,6 +72,20 @@ export async function systemReadonlyPaths(
 	}
 }
 
+export async function linuxRuntimeMasks(fs: HostFileSystem): Promise<string[]> {
+	try {
+		const alias = await fs.realpath('/var/run');
+
+		return alias === '/run' ? ['/run'] : ['/run', alias];
+	} catch (error) {
+		if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+			return ['/run'];
+		}
+
+		throw error;
+	}
+}
+
 // MXC 1.0.1 read-only binds these directories into every Bubblewrap sandbox so
 // the resolver configuration symlinks keep working. Their service sockets let
 // a sandboxed command ask a host daemon to resolve names outside the sandbox's

@@ -4,9 +4,21 @@ import { ResolverNotFileError } from '../errors.js';
 import { FileSystemError } from '../fixtures/errors.js';
 import { memoryHost } from '../fixtures/host.js';
 
-import { resolverSockets, systemReadonlyPaths } from './system-paths.js';
+import {
+	linuxRuntimeMasks,
+	resolverSockets,
+	systemReadonlyPaths
+} from './system-paths.js';
 
 const external = 'nameserver 0.250.250.200\n';
+
+it('masks the shared runtime directory once when /var/run aliases /run', async () => {
+	const { host, memory } = memoryHost({ '/run': {}, '/var': {} });
+
+	memory.symlinkSync('/run', '/var/run');
+
+	await expect(linuxRuntimeMasks(host.fs)).resolves.toStrictEqual(['/run']);
+});
 
 it.each([
 	{

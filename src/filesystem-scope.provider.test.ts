@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import {
 	mkdir,
 	mkdtemp,
@@ -6,6 +7,7 @@ import {
 	rm,
 	writeFile
 } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -325,6 +327,52 @@ it('grants a narrow directory without exposing credential siblings', async () =>
 		});
 	});
 });
+
+it.runIf(process.platform === 'linux').each(['directory', 'socket'] as const)(
+	'refuses a Linux offline grant to a host %s',
+	async (kind) => {
+		await withFixtureHome(async ({ home, request, open }) => {
+			const grant = path.join(home, 'grant');
+			const server = kind === 'socket' ? createServer() : undefined;
+
+			if (server === undefined) {
+				await mkdir(grant);
+			} else {
+				const listening = once(server, 'listening');
+
+				server.listen(grant);
+				await listening;
+			}
+
+			try {
+				await expect(
+					open({
+						...request,
+						paths: { read: [grant] }
+					})
+				).rejects.toStrictEqual(
+					new UnsupportedSandboxPolicyError({
+						operation: 'open',
+						providerId: 'mxc',
+						detail: {
+							kind: 'path',
+							path: grant,
+							access: 'read',
+							reason: 'unreachable'
+						}
+					})
+				);
+			} finally {
+				if (server !== undefined) {
+					const closed = once(server, 'close');
+
+					server.close();
+					await closed;
+				}
+			}
+		});
+	}
+);
 
 it.runIf(process.platform === 'linux').each(['read', 'write'] as const)(
 	'refuses a Bubblewrap %s directory grant that encloses absent credential locations',

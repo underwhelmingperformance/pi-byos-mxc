@@ -8,13 +8,13 @@ import { quote } from './shell.js';
 const sockets = await resolverSockets(process.platform, systemHost.fs);
 
 it.skipIf(sockets.length === 0)(
-	'hides the host resolver sockets that MXC mounts',
+	'hides the paths of host resolver sockets in the Linux offline profile',
 	async () => {
 		await withNativeSandbox({}, async (sandbox) => {
 			const checks = sockets
 				.map(
 					(socket) =>
-						String.raw`[ -S ${quote(socket)} ] && printf '%s\n' ${quote(socket)}`
+						String.raw`[ -e ${quote(socket)} ] && printf '%s\n' ${quote(socket)}`
 				)
 				.join('; ');
 			const result = await sandbox.exec({

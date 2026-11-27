@@ -194,6 +194,23 @@ export async function planPathGrants(
 			throw refusal();
 		}
 
+		if (backend === 'bubblewrap' && !policy.network) {
+			const metadata = await inspectGrantPath(fs, hostPath);
+			const isNewWorkspaceFile =
+				metadata === undefined &&
+				kind === 'write' &&
+				isPathWithin(hostWorkspace, hostPath);
+
+			if (!isNewWorkspaceFile && metadata?.isFile() !== true) {
+				context.reportDiagnostic({
+					level: 'warning',
+					message: 'The Linux offline profile can grant only regular files.'
+				});
+
+				throw refusal();
+			}
+		}
+
 		if (credentials.some((entry) => isPathWithin(entry, hostPath))) {
 			if (
 				backend === 'seatbelt' &&
