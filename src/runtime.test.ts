@@ -1,11 +1,13 @@
 import path from 'node:path';
 
+import type { SandboxPolicy } from 'pi-bring-your-own-sandbox/provider';
 import { expect, it } from 'vitest';
 
 import { validateConfig } from './config.js';
 import {
 	InvalidPackageManifestError,
 	OverlappingPathsError,
+	PersonalShellError,
 	ShellStartupError,
 	UnsupportedRuntimeError
 } from './errors.js';
@@ -63,8 +65,12 @@ function layout(
 
 	return {
 		...fixture,
-		prepare: (workspace: string, settings: unknown = {}) =>
-			prepareRuntime(workspace, validateConfig(settings), {
+		prepare: (
+			workspace: string,
+			settings: unknown = {},
+			hostUserData: SandboxPolicy['hostUserData'] = 'denied'
+		) =>
+			prepareRuntime(workspace, validateConfig(settings), hostUserData, {
 				host: fixture.host,
 				supervisor
 			})
@@ -95,6 +101,40 @@ it('prepares canonical grants for a separate workspace', async () => {
 		],
 		backend: 'seatbelt'
 	});
+});
+
+it.each(['darwin', 'linux'] as const)(
+	'refuses a configured home shell in a denied %s profile',
+	async (platform) => {
+		const { memory, prepare } = layout({ platform });
+		const shell = '/home/user/bin/sh';
+
+		memory.mkdirSync(path.dirname(shell), { recursive: true });
+		memory.writeFileSync(shell, '#!/bin/sh\n', { mode: 0o755 });
+
+		await expect(
+			prepare('/workspace', { shells: { sh: shell } })
+		).rejects.toStrictEqual(new PersonalShellError('sh'));
+	}
+);
+
+it('allows a shell in the home when the profile permits host user data', async () => {
+	const { memory, prepare } = layout();
+	const shell = '/home/user/bin/sh';
+
+	memory.mkdirSync(path.dirname(shell), { recursive: true });
+	memory.writeFileSync(shell, '#!/bin/sh\n', { mode: 0o755 });
+
+	const runtime = await prepare(
+		'/workspace',
+		{ shells: { sh: shell } },
+		'read-only'
+	);
+
+	expect([...runtime.shells]).toStrictEqual([
+		['sh', shell],
+		['bash', '/bin/bash']
+	]);
 });
 
 it('grants the Node runtime libraries even with a configured target PATH', async () => {

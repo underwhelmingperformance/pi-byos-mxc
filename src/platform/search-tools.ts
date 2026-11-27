@@ -19,14 +19,18 @@ export interface SearchToolchain {
 }
 
 export async function darwinSearchTools(
-	workspace: string
+	workspace: string,
+	restrictedHome?: string
 ): Promise<SearchToolchain> {
 	const piBin = path.join(getAgentDir(), 'bin');
 	const directories = [
 		piBin,
 		...(process.env.PATH ?? '').split(path.delimiter)
 	].filter(
-		(entry) => path.isAbsolute(entry) && !isPathWithin(workspace, entry)
+		(entry) =>
+			path.isAbsolute(entry) &&
+			!isPathWithin(workspace, entry) &&
+			(restrictedHome === undefined || entry !== piBin)
 	);
 	const tools = new Set<string>();
 	const files = new Set<string>();
@@ -38,6 +42,13 @@ export async function darwinSearchTools(
 				const file = await realpath(candidate);
 
 				if (path.basename(file) !== name || isPathWithin(workspace, file)) {
+					continue;
+				}
+
+				if (
+					restrictedHome !== undefined &&
+					isPathWithin(restrictedHome, file)
+				) {
 					continue;
 				}
 
@@ -63,7 +74,11 @@ export async function darwinSearchTools(
 					async realpath(candidate) {
 						const resolved = await realpath(candidate);
 
-						if (installations.every((root) => !isPathWithin(root, resolved))) {
+						if (
+							(restrictedHome !== undefined &&
+								isPathWithin(restrictedHome, resolved)) ||
+							installations.every((root) => !isPathWithin(root, resolved))
+						) {
 							throw new Error(
 								'The tool has a library outside its system installation.'
 							);

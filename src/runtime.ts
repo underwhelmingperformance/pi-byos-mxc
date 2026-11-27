@@ -2,22 +2,27 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { ShellDialect } from 'pi-bring-your-own-sandbox/provider';
+import type {
+	SandboxPolicy,
+	ShellDialect
+} from 'pi-bring-your-own-sandbox/provider';
 import { cleanDisplayText } from 'pi-bring-your-own-sandbox/provider';
 
 import type { MxcConfig } from './config.js';
 import {
 	NodeLibraryResolutionError,
 	OverlappingPathsError,
+	PersonalShellError,
 	ShellNotFileError,
 	ShellStartupError,
 	SpecialWorkspaceEntryError,
 	UnsupportedRuntimeError,
 	WorkspaceNotDirectoryError
 } from './errors.js';
+import { canonicalGrantPath } from './grants.js';
 import type { Host, HostFileSystem } from './host.js';
 import { systemHost } from './host.js';
-import { assertDisjointPaths } from './paths.js';
+import { assertDisjointPaths, isPathWithin } from './paths.js';
 import { linkedLibraryGrants } from './platform/linked-libraries.js';
 import { packageRoot, trustedPackages } from './platform/packages.js';
 import { darwinSearchTools } from './platform/search-tools.js';
@@ -101,6 +106,7 @@ async function executable(
 export async function prepareRuntime(
 	workspace: string,
 	config: MxcConfig,
+	hostUserData: SandboxPolicy['hostUserData'] = 'denied',
 	options: RuntimeOptions = DEFAULT_OPTIONS
 ): Promise<MxcRuntime> {
 	const { fs, environment } = options.host;
@@ -126,9 +132,13 @@ export async function prepareRuntime(
 
 	const entry = await fs.realpath(options.supervisor);
 	const readonlyPaths = await systemReadonlyPaths(environment.platform, fs);
+	const restrictedHome =
+		hostUserData === 'denied'
+			? await canonicalGrantPath(fs, environment.homeDirectory)
+			: undefined;
 	const search =
 		environment.platform === 'darwin' && config.environment.PATH === undefined
-			? await options.searchTools?.(canonicalWorkspace)
+			? await options.searchTools?.(canonicalWorkspace, restrictedHome)
 			: undefined;
 	const node = await fs.realpath(environment.execPath);
 
@@ -161,11 +171,19 @@ export async function prepareRuntime(
 	const shells = new Map<ShellDialect, string>();
 
 	for (const dialect of ['sh', 'bash'] as const) {
+		let shell: string;
+
 		try {
-			shells.set(dialect, await executable(fs, config.shells[dialect]));
+			shell = await executable(fs, config.shells[dialect]);
 		} catch (error) {
 			throw new ShellStartupError(dialect, { cause: error });
 		}
+
+		if (restrictedHome !== undefined && isPathWithin(restrictedHome, shell)) {
+			throw new PersonalShellError(dialect);
+		}
+
+		shells.set(dialect, shell);
 	}
 
 	assertDisjointPaths(canonicalWorkspace, [

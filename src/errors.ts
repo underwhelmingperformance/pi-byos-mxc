@@ -246,6 +246,16 @@ export class SpecialWorkspaceEntryError extends UnenforceablePolicyError {
 	}
 }
 
+export class PersonalShellError extends UnenforceablePolicyError {
+	override readonly name = 'PersonalShellError';
+
+	constructor(dialect: 'sh' | 'bash') {
+		super(
+			`MXC cannot use shells.${dialect} from the host home in a profile that denies host user data. Configure a system shell in mxc-sandbox.json.`
+		);
+	}
+}
+
 export class ShellStartupError extends MxcConfigError {
 	override readonly name = 'ShellStartupError';
 

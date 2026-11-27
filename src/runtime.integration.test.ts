@@ -14,7 +14,7 @@ const supervisor = fileURLToPath(
 );
 
 function prepare(workspace: string) {
-	return prepareRuntime(workspace, validateConfig({}), {
+	return prepareRuntime(workspace, validateConfig({}), 'denied', {
 		host: systemHost,
 		supervisor
 	});

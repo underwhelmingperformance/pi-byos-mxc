@@ -239,7 +239,8 @@ export class MxcBackend implements SandboxBackend {
 				);
 			const runtime = await dependencies.prepareRuntime(
 				parent?.workspace.root ?? request.hostWorkspace,
-				request.configuration
+				request.configuration,
+				policy.hostUserData
 			);
 
 			if (
