@@ -7,6 +7,16 @@ import { ResolverNotFileError } from '../errors.js';
 import type { HostFileSystem } from '../host.js';
 import { compareText, isPathWithin } from '../paths.js';
 
+export function isHostSystemPath(
+	platform: NodeJS.Platform,
+	filename: string
+): boolean {
+	return (
+		(platform === 'darwin' || platform === 'linux') &&
+		hostSystemRoots[platform].some((root) => isPathWithin(root, filename))
+	);
+}
+
 const loopback = new BlockList();
 
 loopback.addSubnet('127.0.0.0', 8, 'ipv4');

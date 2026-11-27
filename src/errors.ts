@@ -251,7 +251,7 @@ export class PersonalShellError extends UnenforceablePolicyError {
 
 	constructor(dialect: 'sh' | 'bash') {
 		super(
-			`MXC cannot use shells.${dialect} from the host home in a profile that denies host user data. Configure a system shell in mxc-sandbox.json.`
+			`MXC cannot use shells.${dialect} outside the host system roots in a profile that denies host user data. Configure a system shell in mxc-sandbox.json.`
 		);
 	}
 }

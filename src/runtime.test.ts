@@ -103,11 +103,16 @@ it('prepares canonical grants for a separate workspace', async () => {
 	});
 });
 
-it.each(['darwin', 'linux'] as const)(
-	'refuses a configured home shell in a denied %s profile',
-	async (platform) => {
+it.each([
+	{ platform: 'darwin', shell: '/home/user/bin/sh' },
+	{ platform: 'linux', shell: '/home/user/bin/sh' },
+	{ platform: 'darwin', shell: '/opt/homebrew/bin/sh' },
+	{ platform: 'linux', shell: '/usr/local/bin/sh' },
+	{ platform: 'darwin', shell: '/System/Volumes/Data/home/user/bin/sh' }
+] as const)(
+	'refuses a configured shell at $shell in a denied $platform profile',
+	async ({ platform, shell }) => {
 		const { memory, prepare } = layout({ platform });
-		const shell = '/home/user/bin/sh';
 
 		memory.mkdirSync(path.dirname(shell), { recursive: true });
 		memory.writeFileSync(shell, '#!/bin/sh\n', { mode: 0o755 });

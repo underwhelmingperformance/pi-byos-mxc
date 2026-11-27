@@ -19,14 +19,16 @@ import {
 	UnsupportedRuntimeError,
 	WorkspaceNotDirectoryError
 } from './errors.js';
-import { canonicalGrantPath } from './grants.js';
 import type { Host, HostFileSystem } from './host.js';
 import { systemHost } from './host.js';
-import { assertDisjointPaths, isPathWithin } from './paths.js';
+import { assertDisjointPaths } from './paths.js';
 import { linkedLibraryGrants } from './platform/linked-libraries.js';
 import { packageRoot, trustedPackages } from './platform/packages.js';
 import { darwinSearchTools } from './platform/search-tools.js';
-import { systemReadonlyPaths } from './platform/system-paths.js';
+import {
+	isHostSystemPath,
+	systemReadonlyPaths
+} from './platform/system-paths.js';
 import { resolveBackend } from './policy.js';
 
 export interface MxcRuntime {
@@ -132,13 +134,10 @@ export async function prepareRuntime(
 
 	const entry = await fs.realpath(options.supervisor);
 	const readonlyPaths = await systemReadonlyPaths(environment.platform, fs);
-	const restrictedHome =
-		hostUserData === 'denied'
-			? await canonicalGrantPath(fs, environment.homeDirectory)
-			: undefined;
+	const hasHostReads = hostUserData !== 'denied';
 	const search =
 		environment.platform === 'darwin' && config.environment.PATH === undefined
-			? await options.searchTools?.(canonicalWorkspace, restrictedHome)
+			? await options.searchTools?.(canonicalWorkspace, hasHostReads)
 			: undefined;
 	const node = await fs.realpath(environment.execPath);
 
@@ -168,7 +167,7 @@ export async function prepareRuntime(
 		)),
 		node
 	];
-	const shells = new Map<ShellDialect, string>();
+	const shells = new Map<'sh' | 'bash', string>();
 
 	for (const dialect of ['sh', 'bash'] as const) {
 		let shell: string;
@@ -179,10 +178,6 @@ export async function prepareRuntime(
 			throw new ShellStartupError(dialect, { cause: error });
 		}
 
-		if (restrictedHome !== undefined && isPathWithin(restrictedHome, shell)) {
-			throw new PersonalShellError(dialect);
-		}
-
 		shells.set(dialect, shell);
 	}
 
@@ -191,6 +186,16 @@ export async function prepareRuntime(
 		...readonlyPaths,
 		...shells.values()
 	]);
+
+	const personalShell = hasHostReads
+		? undefined
+		: shells
+				.entries()
+				.find(([, shell]) => !isHostSystemPath(environment.platform, shell));
+
+	if (personalShell !== undefined) {
+		throw new PersonalShellError(personalShell[0]);
+	}
 
 	return {
 		entry,

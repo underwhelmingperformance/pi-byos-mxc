@@ -10,6 +10,7 @@ import {
 	inspectLinkedLibraries,
 	linkedLibraryGrants
 } from './linked-libraries.js';
+import { isHostSystemPath } from './system-paths.js';
 
 const installations = ['/opt', '/usr/local', '/nix/store', '/usr/bin'];
 
@@ -20,7 +21,7 @@ export interface SearchToolchain {
 
 export async function darwinSearchTools(
 	workspace: string,
-	restrictedHome?: string
+	hasHostReads: boolean
 ): Promise<SearchToolchain> {
 	const piBin = path.join(getAgentDir(), 'bin');
 	const directories = [
@@ -30,10 +31,15 @@ export async function darwinSearchTools(
 		(entry) =>
 			path.isAbsolute(entry) &&
 			!isPathWithin(workspace, entry) &&
-			(restrictedHome === undefined || entry !== piBin)
+			(hasHostReads || entry !== piBin)
 	);
 	const tools = new Set<string>();
 	const files = new Set<string>();
+
+	const isAllowedInstallation = (filename: string) =>
+		hasHostReads
+			? installations.some((root) => isPathWithin(root, filename))
+			: isHostSystemPath('darwin', filename);
 
 	async function locate(name: string): Promise<void> {
 		for (const directory of directories) {
@@ -45,17 +51,10 @@ export async function darwinSearchTools(
 					continue;
 				}
 
-				if (
-					restrictedHome !== undefined &&
-					isPathWithin(restrictedHome, file)
-				) {
-					continue;
-				}
+				const isPersonalTool =
+					hasHostReads && directory === piBin && file === candidate;
 
-				if (
-					!(directory === piBin && file === candidate) &&
-					installations.every((root) => !isPathWithin(root, file))
-				) {
+				if (!isPersonalTool && !isAllowedInstallation(file)) {
 					continue;
 				}
 
@@ -74,11 +73,7 @@ export async function darwinSearchTools(
 					async realpath(candidate) {
 						const resolved = await realpath(candidate);
 
-						if (
-							(restrictedHome !== undefined &&
-								isPathWithin(restrictedHome, resolved)) ||
-							installations.every((root) => !isPathWithin(root, resolved))
-						) {
+						if (!isAllowedInstallation(resolved)) {
 							throw new Error(
 								'The tool has a library outside its system installation.'
 							);
