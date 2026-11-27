@@ -360,14 +360,14 @@ BYOS consumers can request `search.find` and `search.grep`. Both run in the same
 sandbox as shell commands. Find returns relative paths in UTF-16 code unit
 order, with a trailing slash for directories. Patterns use Node's
 `path.matchesGlob` on the basename, or on the relative path when the pattern
-contains a slash. Searches skip `.git` and `node_modules`, include other hidden
-entries when the pattern matches, and ignore Git ignore files.
+contains a slash. Find skips `.git` and `node_modules` and includes other hidden
+entries when the pattern matches.
 
 Grep matches each UTF-8 line with a RE2 regular expression or a literal string.
-It skips binary files and files larger than 8 MiB. The limit counts matching
-lines. Both searches report truncation only when another result exists. A
-directory listing or grep response larger than the worker's 8 MiB budget causes
-the operation to fail.
+It honours `.rgignore`, `.ignore`, and the Git ignore rules in workspace
+repositories. It skips binary files and files larger than 16 MiB. The limit
+counts matching lines. Both searches report truncation only when another result
+exists. A search response larger than 16 MiB causes the operation to fail.
 
 ### Network access
 
