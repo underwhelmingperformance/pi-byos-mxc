@@ -5,6 +5,7 @@ import {
 	readFile,
 	readlink,
 	realpath,
+	rename,
 	rm,
 	stat,
 	symlink,
@@ -25,7 +26,10 @@ import {
 	SandboxPathNotFoundError,
 	SandboxPermissionDeniedError
 } from 'pi-bring-your-own-sandbox/provider';
-import type { SandboxProviderFixtureOptions } from 'pi-bring-your-own-sandbox/testing';
+import type {
+	SandboxProviderFixtureOptions,
+	SandboxProviderTestFixture
+} from 'pi-bring-your-own-sandbox/testing';
 import { defineSandboxProviderTests } from 'pi-bring-your-own-sandbox/testing';
 import { assert, expect } from 'vitest';
 
@@ -35,6 +39,7 @@ import {
 	startDescendant,
 	verifyDescendantStopped
 } from './fixtures/descendant-lock.js';
+import { nodeCommand } from './fixtures/native-sandbox.js';
 import { readProcessTable } from './fixtures/process-table.js';
 import { defaultPolicy } from './fixtures/profiles.js';
 import type { Host } from './host.js';
@@ -168,6 +173,54 @@ function shell(command: string): ProcessRequest {
 	};
 }
 
+function nodeBufferExpression(bytes: Uint8Array): string {
+	return `Buffer.from('${Buffer.from(bytes).toString('base64')}', 'base64')`;
+}
+
+async function workspaceVisibility(
+	workspace: string,
+	canWrite: boolean
+): Promise<NonNullable<SandboxProviderTestFixture['visibility']>> {
+	const targetPath = 'visibility.txt';
+	const source = path.join(workspace, targetPath);
+	const temporary = path.join(workspace, 'visibility-replacement.txt');
+	const target = JSON.stringify(targetPath);
+	const write = (bytes: Uint8Array) =>
+		`fs.writeFileSync(${target}, ${nodeBufferExpression(bytes)});`;
+
+	await writeFile(source, 'initial');
+
+	return {
+		targetPath,
+		readSource: () => readFile(source),
+		async replaceSource(bytes) {
+			await writeFile(temporary, bytes);
+			await rename(temporary, source);
+		},
+		readTarget: shell(`cat ${quote(targetPath)}`),
+		writeTarget: (bytes) =>
+			shell(nodeCommand(`const fs = require('node:fs'); ${write(bytes)}`)),
+		...(canWrite && {
+			waitForReplacement: (bytes: Uint8Array, replacement: Uint8Array) =>
+				shell(
+					nodeCommand(`
+						const fs = require('node:fs');
+						const expected = ${nodeBufferExpression(replacement)};
+						${write(bytes)}
+						process.stdout.write('ready');
+						const timer = setInterval(() => {
+							const observed = fs.readFileSync(${target});
+							if (observed.equals(expected)) {
+								clearInterval(timer);
+								process.stdout.write(observed);
+							}
+						}, 50);
+					`)
+				)
+		})
+	};
+}
+
 const suite: SandboxProviderFixtureOptions<MxcConfig> = {
 	label: `MXC ${process.platform}/${process.arch} declared profiles`,
 	timeoutMs: 20_000,
@@ -246,6 +299,12 @@ const suite: SandboxProviderFixtureOptions<MxcConfig> = {
 		return {
 			provider: testedProvider(),
 			configuration: {},
+			...(selection?.mode === 'open' && {
+				visibility: await workspaceVisibility(
+					workspace,
+					policy.hostWorkspaceWrites
+				)
+			}),
 			find: [
 				{
 					request: { path: searchRoot, pattern: '*.txt', limit: 2 },

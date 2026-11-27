@@ -15,10 +15,7 @@ import type {
 	SandboxOpenContext,
 	SandboxOpenRequest
 } from 'pi-bring-your-own-sandbox/provider';
-import {
-	SandboxPermissionDeniedError,
-	UnsupportedSandboxPolicyError
-} from 'pi-bring-your-own-sandbox/provider';
+import { UnsupportedSandboxPolicyError } from 'pi-bring-your-own-sandbox/provider';
 import { assert, expect, it, vi } from 'vitest';
 
 import { MxcBackend } from './backend.js';
@@ -193,43 +190,6 @@ it.runIf(process.platform === 'darwin').each([false, true])(
 					)
 				);
 			}
-		});
-	}
-);
-
-it.runIf(process.platform === 'darwin')(
-	'refuses writes to ordinary and credential files with read-only host user data',
-	async () => {
-		await withFixtureHome(async ({ home, request, context, open }) => {
-			const ordinary = path.join(home, 'ordinary');
-			const credential = path.join(home, '.ssh/marker');
-
-			await mkdir(path.dirname(credential));
-			await Promise.all([
-				writeFile(ordinary, 'ordinary'),
-				writeFile(credential, 'credential')
-			]);
-
-			const backend = await open({
-				...request,
-				profile: fixtureProfile({ network: true, hostUserData: 'read-only' })
-			});
-			const writer = backend.files?.write;
-
-			assert.isDefined(writer);
-
-			for (const filename of [ordinary, credential]) {
-				await expect(
-					writer.writeFile(filename, Buffer.from('changed'), context)
-				).rejects.toBeInstanceOf(SandboxPermissionDeniedError);
-			}
-
-			expect(
-				await Promise.all([
-					readFile(ordinary, 'utf8'),
-					readFile(credential, 'utf8')
-				])
-			).toStrictEqual(['ordinary', 'credential']);
 		});
 	}
 );

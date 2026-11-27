@@ -56,13 +56,13 @@ The provider also does not stop:
 
 The tested baseline is Node **24.21.0** and **24.22.2**, pnpm **12.15.0**, Pi
 **1.5.0**, TypeBox **1.3.27** and MXC **1.0.1**. The manifest pins the BYOS SDK
-to [BYOS revision `e8f4dfd`][byos-pin]. Auto-review needs a version that uses
+to [BYOS revision `0b224db`][byos-pin]. Auto-review needs a version that uses
 review source identities from the redesigned SDK. A source build requires a C
 compiler and the target platform's headers. Build the archive on the target OS
 and architecture.
 
 [byos-pin]:
-  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/commit/e8f4dfd9cc1eb413d7bd7d085552f56593929552
+  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/commit/0b224db373268a4e69f881e61814635823472d1d
 
 Linux requires unprivileged user namespaces and Bubblewrap 0.5.0 or newer. Open
 egress needs additional slirp, iproute2, util-linux and firewall prerequisites.
@@ -259,7 +259,7 @@ existing `.config` directory and protects `.config/fish` separately. Add project
 entries through `protectPaths`:
 
 [protected-defaults]:
-  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/e8f4dfd9cc1eb413d7bd7d085552f56593929552/packages/sdk/src/protected-workspace-paths.ts
+  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/0b224db373268a4e69f881e61814635823472d1d/packages/sdk/src/protected-workspace-paths.ts
 
 ```json
 {
@@ -329,7 +329,7 @@ SSH, AWS, Git, keychains, keyrings and browser profiles. Seatbelt may expose
 metadata for files outside the readable paths.
 
 [credentials]:
-  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/e8f4dfd9cc1eb413d7bd7d085552f56593929552/packages/sdk/src/credential-locations.ts
+  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/0b224db373268a4e69f881e61814635823472d1d/packages/sdk/src/credential-locations.ts
 
 Linux profiles narrow host user data to `denied`. Bubblewrap cannot mask an
 absent credential path inside a read-only host mount. If the host later creates

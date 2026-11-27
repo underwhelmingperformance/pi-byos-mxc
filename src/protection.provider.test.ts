@@ -1,5 +1,12 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import {
+	lstat,
+	mkdir,
+	readdir,
+	readFile,
+	rename,
+	writeFile
+} from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -122,6 +129,37 @@ it('keeps host configuration immutable while ordinary workspace writes succeed',
 					'original'
 				);
 			}
+		}
+	);
+});
+
+it('protects a host replacement on the next tool call', async () => {
+	await withNativeSandbox(
+		{},
+		async (sandbox, workspace) => {
+			const file = path.join(workspace, '.envrc');
+			const replacement = path.join(workspace, 'replacement');
+
+			await writeFile(replacement, 'host edit');
+			await rename(replacement, file);
+			await expect(
+				sandbox.files.writeFile(file, Buffer.from('tool edit'))
+			).rejects.toMatchObject({ name: 'SandboxPermissionDeniedError' });
+			await sandbox.files.writeFile(
+				path.join(workspace, 'notes'),
+				Buffer.from('saved')
+			);
+
+			const contents = await Promise.all([
+				readFile(file, 'utf8'),
+				readFile(path.join(workspace, 'notes'), 'utf8')
+			]);
+
+			expect(contents).toStrictEqual(['host edit', 'saved']);
+		},
+		{
+			prepareWorkspace: async (workspace) =>
+				writeFile(path.join(workspace, '.envrc'), 'original')
 		}
 	);
 });

@@ -1,17 +1,17 @@
-# BYOS provider conformance at `e8f4dfd`
+# BYOS provider conformance at `0b224db`
 
 On macOS ARM64, MXC has eight live-checkout profiles and four private-copy
 profiles. The SDK suite selects each profile through its broker. It checks
 literal argv, shell execution, file and search operations, copying,
 process-group cancellation, and disposal and recovery after opening faults. MXC
 also checks writes through aliases to host files independently of the backend.
-On macOS 27.0.1 ARM64 with Nix Node 24.21.0, the single SDK suite runs 328
-cases. These include FIFO refusal and workspace read grants for each of the
-eight live-checkout profiles, and 126 credential cases across six profiles that
-allow host user data reads.
+On macOS 27.0.1 ARM64 with Nix Node 24.21.0, the single SDK suite runs 336
+cases. These include FIFO refusal, workspace read grants and shared workspace
+visibility for each of the eight live-checkout profiles. The 126 credential
+cases cover six profiles that allow read-only host user data.
 
 `pnpm check` passed 187 unit and 31 integration tests. The full provider run
-passed 383 tests and skipped two Linux tests for nested-path pins and resolver
+passed 389 tests and skipped two Linux tests for nested-path pins and resolver
 sockets.
 
 Readable profiles publish the canonical host home as
@@ -19,10 +19,15 @@ Readable profiles publish the canonical host home as
 that field. `workspace.home` continues to specify private scratch and the
 location of home-relative path grants.
 
-The SDK's workspace visibility case still disables profile generation. MXC keeps
-its native visibility tests. The SDK's credential cases attempt writes only for
-`read-write` profiles. A separate MXC test verifies that a `read-only` profile
-refuses writes to an ordinary host file and a credential marker.
+The generated visibility cases compare host file contents after an atomic
+replacement with the contents that target processes and file tools read. On
+writable profiles, a running writer observes the host replacement. A separate
+MXC protection test checks that the next file operation cannot write to a
+protected path after the host replaces it.
+
+The generated credential cases attempt writes to ordinary host files,
+credentials and credential aliases on read-only profiles. They read both host
+markers directly to verify that their contents remain intact.
 
 MXC uses the SDK's provider registration, OS error mapping, copy-source
 validation, workspace protection defaults and cleanup context. The SDK's
@@ -55,9 +60,11 @@ orb -m mxc-linux-conformance bash -c 'cd ~/mxc &&
 ```
 
 The frozen install succeeded. `pnpm check` passed 187 unit and 31 integration
-tests. The provider run passed 96 tests, including all 70 SDK cases across the
-four live-checkout profiles. It skipped 31 macOS cases covering copy backends,
-host user data and credential policies, and native Seatbelt behaviour.
+tests. The provider run passed 99 tests, including 74 SDK cases. All four
+live-checkout profiles ran the shared visibility case. Linux declares denied
+host user data only, so the read-only credential cases apply on macOS. The run
+skipped 30 macOS cases covering copy backends, host user data and credential
+policies, and native Seatbelt behaviour.
 
 Linux commands see a private `/tmp`. Bubblewrap creates the parent of a
 workspace mounted under `/tmp`, so a pathname under that parent can refer to a
