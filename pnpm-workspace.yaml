@@ -5,5 +5,5 @@ allowBuilds:
   '@google/genai': false
   koffi: false
   node-pty: false
-  'pi-bring-your-own-sandbox@https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/cf95c9834408453487fbcbd2a353a92dbbe1fe39#path:/packages/sdk': true
+  'pi-bring-your-own-sandbox@https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/f42f166c11a64886efde257f28151747ca049f5b#path:/packages/sdk': true
   protobufjs: false

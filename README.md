@@ -56,13 +56,13 @@ The provider also does not stop:
 
 The tested baseline is Node **24.21.0** and **24.22.2**, pnpm **12.15.0**, Pi
 **1.5.0**, TypeBox **1.3.27** and MXC **1.0.1**. The manifest pins the BYOS SDK
-to [BYOS revision `cf95c98`][byos-pin]. Auto-review needs a version that uses
+to [BYOS revision `f42f166`][byos-pin]. Auto-review needs a version that uses
 review source identities from the redesigned SDK. A source build requires a C
 compiler and the target platform's headers. Build the archive on the target OS
 and architecture.
 
 [byos-pin]:
-  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/commit/cf95c9834408453487fbcbd2a353a92dbbe1fe39
+  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/commit/f42f166c11a64886efde257f28151747ca049f5b
 
 Linux requires unprivileged user namespaces and Bubblewrap 0.5.0 or newer. Open
 egress needs additional slirp, iproute2, util-linux and firewall prerequisites.
@@ -259,7 +259,7 @@ existing `.config` directory and protects `.config/fish` separately. Add project
 entries through `protectPaths`:
 
 [protected-defaults]:
-  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/cf95c9834408453487fbcbd2a353a92dbbe1fe39/packages/sdk/src/protected-workspace-paths.ts
+  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/f42f166c11a64886efde257f28151747ca049f5b/packages/sdk/src/protected-workspace-paths.ts
 
 ```json
 {
@@ -329,7 +329,7 @@ SSH, AWS, Git, keychains, keyrings and browser profiles. Seatbelt may expose
 metadata for files outside the readable paths.
 
 [credentials]:
-  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/cf95c9834408453487fbcbd2a353a92dbbe1fe39/packages/sdk/src/credential-locations.ts
+  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/f42f166c11a64886efde257f28151747ca049f5b/packages/sdk/src/credential-locations.ts
 
 Linux profiles narrow host user data to `denied`. Bubblewrap cannot mask an
 absent credential path inside a read-only host mount. If the host later creates
@@ -375,7 +375,7 @@ Debian conformance machine. The Linux offline profile restores existing SDK
 system roots inside its runtime masks as read-only mounts.
 
 [system-roots]:
-  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/cf95c9834408453487fbcbd2a353a92dbbe1fe39/packages/sdk/src/host-system-roots.ts
+  https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/blob/f42f166c11a64886efde257f28151747ca049f5b/packages/sdk/src/host-system-roots.ts
 
 On Linux, the adapter grants read-only access to the canonical
 `/etc/resolv.conf` target when that file lists a routable nameserver, including

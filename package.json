@@ -47,7 +47,7 @@
 	},
 	"dependencies": {
 		"@microsoft/mxc-sdk": "1.0.1",
-		"pi-bring-your-own-sandbox": "github:underwhelmingperformance/pi-bring-your-own-sandbox#cf95c9834408453487fbcbd2a353a92dbbe1fe39&path:/packages/sdk"
+		"pi-bring-your-own-sandbox": "github:underwhelmingperformance/pi-bring-your-own-sandbox#f42f166c11a64886efde257f28151747ca049f5b&path:/packages/sdk"
 	},
 	"devDependencies": {
 		"@earendil-works/pi-ai": "1.5.0",
